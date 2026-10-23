@@ -1,4 +1,4 @@
-export type SchoolFileRole = 'student' | 'teacher' | 'admin' | 'parent' | string;
+export type SchoolFileRole = 'student' | 'admin' | 'parent' | string;
 export type SchoolFilePurpose = 'student-file' | 'course-cover' | 'course-file' | 'payment-receipt' | 'platform-library' | 'community-attachment' | string;
 export interface SchoolFileAccessClaims { sub: string; role: SchoolFileRole }
 export interface SchoolFileAccessRow { owner_id: string; owner_role?: SchoolFileRole; purpose: SchoolFilePurpose }
@@ -28,16 +28,15 @@ export function isSafeSchoolStorageKey(input: unknown): boolean {
 
 export function canReadSchoolFile(claims: SchoolFileAccessClaims, file: SchoolFileAccessRow): boolean {
   if (claims.role === 'admin') return true;
-  if (file.purpose === 'exam-question') return claims.role === 'teacher' && claims.sub === file.owner_id;
+  if (file.purpose === 'exam-question') return false; // Student access is granted only after the exam references this file.
   if (file.purpose === 'student-file') return false;
   if (file.purpose === 'payment-receipt') return claims.role === 'student' && claims.sub === file.owner_id;
-  if (file.purpose === 'course-cover') return ['student', 'teacher', 'parent'].includes(claims.role);
+  if (file.purpose === 'course-cover') return ['student', 'parent'].includes(claims.role);
   // Course files lack a course_id/enrollment relation in the current schema. Do not expose them
   // to every student/parent until the server can verify enrollment for the exact course.
   if (file.purpose === 'course-file') {
-    if (claims.role === 'teacher') return claims.sub === file.owner_id;
-    // Admin-published MK library attachments are shared learning resources. Files uploaded by
-    // individual teachers remain private until course enrollment is represented server-side.
+    // Admin-published MK library attachments are shared learning resources. Other files remain
+    // private until the server can verify enrollment for their exact course.
     return ['student', 'parent'].includes(claims.role) && file.owner_role === 'admin';
   }
   // Platform-library files require a separate publication and purchase check in the API.
@@ -47,11 +46,11 @@ export function canReadSchoolFile(claims: SchoolFileAccessClaims, file: SchoolFi
 }
 
 export function canUploadSchoolFile(role: SchoolFileRole, purpose: SchoolFilePurpose): boolean {
-  if (purpose === 'exam-question') return role === 'teacher';
+  if (purpose === 'exam-question') return role === 'admin';
   if (purpose === 'student-file' || purpose === 'course-cover') return role === 'admin';
-  if (purpose === 'course-file') return role === 'admin' || role === 'teacher';
+  if (purpose === 'course-file') return role === 'admin';
   if (purpose === 'platform-library') return role === 'admin';
   if (purpose === 'payment-receipt') return role === 'student';
-  if (purpose === 'community-attachment') return ['student','teacher','parent','admin'].includes(role);
+  if (purpose === 'community-attachment') return ['student','parent','admin'].includes(role);
   return false;
 }

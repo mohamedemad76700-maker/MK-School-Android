@@ -3,7 +3,7 @@
   "version": "2.0.0",
   "private": true,
   "type": "module",
-  "description": "MK School backend migrated from Rust/Axum to TypeScript/Node.js/Express",
+  "description": "MK Platform backend migrated from Rust/Axum to TypeScript/Node.js/Express",
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "start": "node dist/main.js",

@@ -56,7 +56,7 @@
     panel.style.width = `${w}px`; panel.style.maxHeight = `${h}px`;
   }
   async function checkStatus() {
-    if (!window.mkBackendAIStatus || !tokenPresent()) { status.textContent = 'سجّل الدخول إلى خادم المدرسة لاستخدام المساعد'; return; }
+    if (!window.mkBackendAIStatus || !tokenPresent()) { status.textContent = 'سجّل الدخول إلى خادم المنصة لاستخدام المساعد'; return; }
     status.textContent = 'جارٍ فحص خدمة الذكاء الاصطناعي…';
     try { const result = await window.mkBackendAIStatus(); status.textContent = result.configured ? 'جاهز • يعتمد على دروسك المسجل فيها' : 'مفتاح الخدمة غير مضبوط على الخادم'; }
     catch { status.textContent = 'تعذر الاتصال بخدمة الذكاء الاصطناعي'; }

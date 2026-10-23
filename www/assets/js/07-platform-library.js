@@ -99,7 +99,7 @@
         else db.platformLibrary = records().filter(resource => String(resource.id) !== String(updated.id));
         if (uploaded) await window.mkDeleteSchoolFile?.(uploaded.id).catch(() => {});
         window.save();
-        return window.toast?.(window.__mkBackendLastError || 'تعذر حفظ المورد على خادم المدرسة.');
+        return window.toast?.(window.__mkBackendLastError || 'تعذر حفظ المورد على خادم المنصة.');
       }
       window.closeModal();
       window.renderPage();
@@ -206,7 +206,7 @@
   window.pages.library = function () {
     if (role() === 'teacher') return window.forbidden?.() || '<div class="card">هذه الصفحة غير متاحة لهذا الحساب.</div>';
     const items = records().filter(item => item && item.active !== false).slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-    const heading = admin() ? 'كتب وملخصات المدرسة' : 'مكتبة الكتب والملخصات';
+    const heading = admin() ? 'كتب وملخصات المنصة' : 'مكتبة الكتب والملخصات';
     const note = admin() ? 'ارفع ملفات آمنة وحدد الصف والسعر، ثم راجع طلبات الشراء من صفحة المدفوعات.' : 'الملفات المدفوعة لا تفتح إلا بعد مراجعة الإدارة لطلب الدفع.';
     const adminAction = admin() ? '<button class="btn primary" data-mk-click="mkLibraryOpenForm()">+ إضافة كتاب أو ملخص</button>' : '';
     const libraryBlock = `<section class="card"><div class="section-head"><div><h3>📚 ${heading}</h3><span class="small muted">${note}</span></div>${adminAction}</div><div class="platform-content">${items.map(itemCard).join('') || '<div class="empty">لا توجد كتب أو ملخصات منشورة بعد.</div>'}</div></section>`;
@@ -232,15 +232,31 @@
 
   /* Keep all learning tools inside the Platform section. */
   window.mkRenderPlatformCatalog=window.pages.courses;
+  const baseCourseMarket=window.mkRenderPlatformCatalog;
+  window.mkRenderPlatformCatalog=function(){
+    const query=String(window.mkPlatformCatalogQuery||'');
+    const courses=(db.courses||[]).filter(course=>admin()||course.active!==false);
+    const subjects=[...new Set(courses.map(course=>String(course.subject||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ar'));
+    const subjectOptions=subjects.map(subject=>'<option value="'+escapeHtml(subject)+'">'+escapeHtml(subject)+'</option>').join('');
+    let html=String(baseCourseMarket?.()||'');
+    html=html.replace('id="mkCourseSearch"','id="mkCourseSearch" value="'+escapeHtml(query)+'"');
+    html=html.replace('<label><span>نوع الدورة</span>','<label><span>المادة</span><select id="mkCourseSubjectFilter" data-mk-change="mkFilterCourseSubject(this.value)"><option value="">كل المواد</option>'+subjectOptions+'</select></label><label><span>نوع الدورة</span>');
+    html=html.replace('دورات تناسب مرحلتك','اكتشف الدورات التعليمية');
+    if(admin())html=html.replace('+ إنشاء دورة</button>','+ إنشاء دورة</button><button class="btn" data-mk-click="mkVodafoneSettings()">📱 بيانات الدفع</button>');
+    setTimeout(()=>window.mkFilterCourses?.(),0);
+    return html;
+  };
+  window.mkFilterCourseSubject=function(subject){const queryInput=document.getElementById('mkCourseSearch'),inlineInput=document.getElementById('mkCourseSearchInline'),value=String(subject||'');if(queryInput)queryInput.value=value;if(inlineInput)inlineInput.value=value;window.mkFilterCourses?.();};
   const platformTabsByRole={
     admin:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['studentAffairs','بيانات المستخدمين والتسجيل','👥'],['deviceControl','فك ربط الأجهزة','📱'],['announcements','إعلانات المنصة','📣'],['community','المنتدى','💬'],['assignments','الواجبات','📝'],['exams','الاختبارات','🧪'],['questionBank','بنك الأسئلة','🧠'],['grades','الدرجات','⭐'],['certificates','الشهادات','🏅'],['ai','MK AI','🤖'],['rewards','متجر النقاط','⭐'],['library','المكتبة','📚'],['payments','طلبات الدفع','💳'],['activityLog','سجل النشاط','🧾'],['settings','إعدادات المنصة','⚙️'],['messages','الرسائل','✉️'],['notifications','التنبيهات','🔔']],
     teacher:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['announcements','إعلانات المنصة','📣'],['community','المنتدى','💬'],['assignments','الواجبات','📝'],['exams','الاختبارات','🧪'],['questionBank','بنك الأسئلة','🧠'],['grades','الدرجات','⭐'],['settings','إعدادات الحساب','⚙️'],['messages','الرسائل','✉️'],['notifications','التنبيهات','🔔']],
     parent:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['announcements','إعلانات المنصة','📣'],['community','المنتدى','💬'],['assignments','واجبات الأبناء','📝'],['grades','درجات الأبناء','⭐'],['familyLink','ربط الأبناء','👨‍👩‍👧'],['ai','المساعد الذكي','🤖'],['settings','إعدادات الحساب','⚙️'],['messages','الرسائل','✉️'],['notifications','التنبيهات','🔔']],
     student:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['announcements','إعلانات المنصة','📣'],['community','المنتدى','💬'],['exams','اختباراتي','🧪'],['grades','درجاتي','⭐'],['certificates','شهاداتي','🏅'],['achievements','إنجازاتي','🏆'],['rewards','متجر النقاط','⭐'],['library','مكتبتي','📚'],['payments','مدفوعاتي','💳'],['familyLink','ربط ولي الأمر','👨‍👩‍👧'],['ai','المساعد الذكي','🤖'],['profile','حسابي وإحصائياتي','👤'],['settings','إعدادات الحساب','⚙️'],['messages','الرسائل','✉️'],['notifications','التنبيهات','🔔']]
   };
+  delete platformTabsByRole.teacher;
   window.mkPlatformAdminTabs=platformTabsByRole.admin;
   const platformPageRoutes={community:'community',assignments:'assignments',exams:'exams',questionBank:'questionBank',grades:'grades',achievements:'achievements',library:'library',payments:'payments',profile:'profile',familyLink:'familyLink',rewards:'rewards',activityLog:'activityLog',studentAffairs:'studentAffairs',deviceControl:'deviceControl',settings:'settings',announcements:'announcements',certificates:'certificates',messages:'messages',notifications:'notifications',dashboard:'learningDashboard'};
-  for(const name of ['teacher','parent','student'])platformTabsByRole[name]=platformTabsByRole[name].filter(item=>item[0]!=='settings');
+  for(const name of ['parent','student'])platformTabsByRole[name]=platformTabsByRole[name].filter(item=>item[0]!=='settings');
   const baseCatalogSearch=window.mkPlatformCatalogSearch;
   window.mkPlatformCatalogSearch=function(value){
     window.mkPlatformCatalogQuery=String(value||'');
@@ -316,7 +332,7 @@
     return `<section class="hero"><div><h1>${admin?'إدارة المنصة التعليمية':'مساحتك التعليمية'}</h1><p>${admin?'تابع خدمات المنصة التعليمية وإدارة حساباتها من لوحة واحدة.':'ابدأ من الدورات وتابع أنشطتك التعليمية.'}</p></div><span class="hero-badge">🎓 منصة MK التعليمية</span></section><section class="card"><div class="section-head"><h2>⚡ أقسام المنصة</h2></div><div class="quick-grid">${shortcuts.map(([key,label,icon])=>`<button class="quick" data-mk-click="mkPlatformOpen('${key}')"><span style="font-size:24px">${icon}</span><b>${label}</b></button>`).join('')}</div>${admin?'<div class="row" style="margin-top:14px"><button class="btn" data-mk-click="mkPlatformOpen(\'studentAffairs\')">بيانات المستخدمين والتسجيل</button><button class="btn" data-mk-click="mkPlatformOpen(\'payments\')">طلبات الدفع</button><button class="btn" data-mk-click="mkPlatformOpen(\'deviceControl\')">فك ربط الأجهزة</button></div>':''}</section>`;
   };
   const baseSettingsPage=window.pages.settings;
-  window.mkAdminResetAccountPassword=async function(event){event.preventDefault();if(String(current?.role||'').toLowerCase()!=='admin')return window.forbidden?.();const lookup=String(document.getElementById('mkResetAccountLookup')?.value||'').trim(),password=String(document.getElementById('mkResetAccountPassword')?.value||''),message=document.getElementById('mkResetAccountMessage'),button=document.getElementById('mkResetAccountSubmit'),cfg=window.mkVideoCfg?.()||{},token=mkRuntimeGetItem('mk_video_jwt');if(!lookup||password.length<8||password.length>1024)return toast('أدخل البريد أو رقم الحساب وكلمة مرور مؤقتة لا تقل عن 8 أحرف');if(!cfg.url||!token)return toast('خادم المدرسة غير متصل');button.disabled=true;if(message)message.textContent='جارٍ تغيير كلمة المرور وإغلاق الجلسات القديمة…';try{const response=await fetch(cfg.url+'/api/v1/admin/accounts/password-reset',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({user_id:lookup,password})}),data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.message||data.error||'تعذر تغيير كلمة المرور');document.getElementById('mkResetAccountPassword').value='';if(message)message.textContent=`تم تغيير كلمة مرور الحساب ${data.user_id} وإغلاق جلساته. أبلغ صاحب الحساب بكلمة المرور المؤقتة عبر وسيلة خاصة.`;audit('admin_manual_password_reset',String(data.user_id));toast('تم تغيير كلمة المرور بنجاح')}catch(error){if(message)message.textContent=error.message||'تعذر تغيير كلمة المرور'}finally{button.disabled=false}};
+  window.mkAdminResetAccountPassword=async function(event){event.preventDefault();if(String(current?.role||'').toLowerCase()!=='admin')return window.forbidden?.();const lookup=String(document.getElementById('mkResetAccountLookup')?.value||'').trim(),password=String(document.getElementById('mkResetAccountPassword')?.value||''),message=document.getElementById('mkResetAccountMessage'),button=document.getElementById('mkResetAccountSubmit'),cfg=window.mkVideoCfg?.()||{},token=mkRuntimeGetItem('mk_video_jwt');if(!lookup||password.length<8||password.length>1024)return toast('أدخل البريد أو رقم الحساب وكلمة مرور مؤقتة لا تقل عن 8 أحرف');if(!cfg.url||!token)return toast('خادم المنصة غير متصل');button.disabled=true;if(message)message.textContent='جارٍ تغيير كلمة المرور وإغلاق الجلسات القديمة…';try{const response=await fetch(cfg.url+'/api/v1/admin/accounts/password-reset',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({user_id:lookup,password})}),data=await response.json().catch(()=>({}));if(!response.ok)throw new Error(data.message||data.error||'تعذر تغيير كلمة المرور');document.getElementById('mkResetAccountPassword').value='';if(message)message.textContent=`تم تغيير كلمة مرور الحساب ${data.user_id} وإغلاق جلساته. أبلغ صاحب الحساب بكلمة المرور المؤقتة عبر وسيلة خاصة.`;audit('admin_manual_password_reset',String(data.user_id));toast('تم تغيير كلمة المرور بنجاح')}catch(error){if(message)message.textContent=error.message||'تعذر تغيير كلمة المرور'}finally{button.disabled=false}};
   window.pages.settings=function(){const html=baseSettingsPage?.()||'';if(String(current?.role||'').toLowerCase()!=='admin')return html;return html+`<section class="card"><div class="section-head"><div><h3>🔐 مساعدة استعادة كلمة المرور</h3><span class="small muted">إذا لم تصل رسالة الاستعادة، يمكن للإدارة تعيين كلمة مرور مؤقتة وإبلاغ صاحب الحساب بها مباشرة.</span></div></div><form data-mk-submit="mkAdminResetAccountPassword(event)"><div class="form-grid"><label>البريد أو رقم الحساب<input id="mkResetAccountLookup" required maxlength="320" autocomplete="off"></label><label>كلمة المرور المؤقتة (8 أحرف على الأقل)<input id="mkResetAccountPassword" type="password" required minlength="8" maxlength="1024" autocomplete="new-password"></label></div><button id="mkResetAccountSubmit" class="btn primary" style="margin-top:12px">تغيير كلمة المرور وإغلاق الجلسات</button><div id="mkResetAccountMessage" class="small muted" role="status" aria-live="polite" style="margin-top:10px"></div></form><div class="notice warn" style="margin-top:12px">الاستعادة الذاتية عبر البريد تحتاج ضبط SMTP في ملف .env. لا تشارك كلمة المرور المؤقتة في المنتدى أو الرسائل العامة.</div></section>`;};
   const unrestrictedSettingsPage=window.pages.settings;
   window.pages.settings=function(){if(!admin())return '<div class="card empty">إعدادات الإدارة غير متاحة لهذا الحساب.</div>';return unrestrictedSettingsPage?.()||'';};

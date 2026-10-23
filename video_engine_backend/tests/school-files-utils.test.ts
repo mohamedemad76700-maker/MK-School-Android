@@ -36,17 +36,17 @@ test('upload permissions are restricted by purpose', () => {
   assert.equal(canUploadSchoolFile('student','student-file'), false);
   assert.equal(canUploadSchoolFile('admin','student-file'), true);
   assert.equal(canUploadSchoolFile('student','payment-receipt'), true);
-  assert.equal(canUploadSchoolFile('teacher','course-file'), true);
+  assert.equal(canUploadSchoolFile('teacher','course-file'), false);
   assert.equal(canUploadSchoolFile('parent','course-file'), false);
   assert.equal(canUploadSchoolFile('student','course-cover'), false);
 });
 
 
-test('course files are not globally readable by students or parents without enrollment mapping', () => {
+test('retired teacher roles and unlinked course files cannot read course files', () => {
   const courseFile = { owner_id: 'teacher-1', owner_role: 'teacher', purpose: 'course-file' };
   assert.equal(canReadSchoolFile({sub:'student-1',role:'student'}, courseFile), false);
   assert.equal(canReadSchoolFile({sub:'parent-1',role:'parent'}, courseFile), false);
-  assert.equal(canReadSchoolFile({sub:'teacher-1',role:'teacher'}, courseFile), true);
+  assert.equal(canReadSchoolFile({sub:'teacher-1',role:'teacher'}, courseFile), false);
   assert.equal(canReadSchoolFile({sub:'teacher-2',role:'teacher'}, courseFile), false);
   const adminPublished = { owner_id: 'admin', owner_role: 'admin', purpose: 'course-file' };
   assert.equal(canReadSchoolFile({sub:'student-1',role:'student'}, adminPublished), true);

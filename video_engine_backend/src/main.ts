@@ -46,7 +46,7 @@ const CORS_ALLOWED_ORIGINS = new Set([
 ]);
 const MAX_VIEWS = 3;
 const MAX_UPLOAD = 1024 * 1024 * 1024;
-const ALLOWED_ROLES = new Set(['student', 'teacher', 'admin', 'parent']);
+const ALLOWED_ROLES = new Set(['student', 'admin', 'parent']);
 
 if (JWT_SECRET.length < 32 || /^(CHANGE|SET_|REPLACE|YOUR_)/i.test(JWT_SECRET)) {
   throw new Error('JWT_SECRET must be configured with at least 32 characters.');
@@ -143,7 +143,7 @@ const clearAuthCookie = (res: Response): void => {
 const verifyToken = (token: string): Claims => {
   try {
     const decoded = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
-    if (!decoded || typeof decoded === 'string' || typeof decoded.sub !== 'string' || typeof decoded.role !== 'string') fail(401, 'invalid or expired token');
+    if (!decoded || typeof decoded === 'string' || typeof decoded.sub !== 'string' || typeof decoded.role !== 'string' || !ALLOWED_ROLES.has(decoded.role)) fail(401, 'invalid or expired token');
     return decoded as Claims;
   } catch { return fail(401, 'invalid or expired token'); }
 };
@@ -269,7 +269,7 @@ function passwordResetUrl(token: string): string {
     host: process.env.HOST?.trim() || '127.0.0.1',
     trustProxy: process.env.TRUST_PROXY === 'true',
   })) {
-    fail(503, 'خدمة الاستعادة غير مهيأة؛ يرجى التواصل مع إدارة المدرسة');
+    fail(503, 'خدمة الاستعادة غير مهيأة؛ يرجى التواصل مع إدارة المنصة');
   }
   const url = new URL(base);
   url.pathname = '/';
@@ -718,7 +718,7 @@ app.post('/api/v1/auth/password-reset/request', passwordResetRequestIpLimiter, p
     const email = str(req.body?.email).trim().toLowerCase();
     if (!email || email.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(400, 'أدخل بريدًا إلكترونيًا صحيحًا');
     const smtp = createSmtpTransport();
-    if (!smtp) return fail(503, 'خدمة استعادة كلمة المرور غير مهيأة بعد؛ يرجى التواصل مع إدارة المدرسة');
+    if (!smtp) return fail(503, 'خدمة استعادة كلمة المرور غير مهيأة بعد؛ يرجى التواصل مع إدارة المنصة');
     const smtpTransport = smtp.transport;
     const smtpFrom = smtp.from;
 
@@ -733,14 +733,14 @@ app.post('/api/v1/auth/password-reset/request', passwordResetRequestIpLimiter, p
         await smtpTransport.sendMail({
           from: smtpFrom,
           to: String(account.email),
-          subject: 'إعادة تعيين كلمة مرور MK School',
-          text: `وصلنا طلب لإعادة تعيين كلمة مرور حسابك في MK School. افتح الرابط التالي خلال 20 دقيقة لاختيار كلمة مرور جديدة:\n\n${link}\n\nإذا لم تطلب ذلك، تجاهل هذه الرسالة.`,
-          html: `<div dir="rtl" lang="ar" style="font-family:Arial,sans-serif;line-height:1.8;color:#172554"><h2>إعادة تعيين كلمة المرور</h2><p>وصلنا طلب لإعادة تعيين كلمة مرور حسابك في MK School.</p><p><a href="${link}" style="display:inline-block;padding:12px 20px;border-radius:10px;background:#315efb;color:#fff;text-decoration:none">اختيار كلمة مرور جديدة</a></p><p>الرابط صالح لمدة 20 دقيقة ويُستخدم مرة واحدة.</p><p>إذا لم تطلب ذلك، تجاهل هذه الرسالة.</p></div>`,
+          subject: 'إعادة تعيين كلمة مرور منصة MK',
+          text: `وصلنا طلب لإعادة تعيين كلمة مرور حسابك في منصة MK. افتح الرابط التالي خلال 20 دقيقة لاختيار كلمة مرور جديدة:\n\n${link}\n\nإذا لم تطلب ذلك، تجاهل هذه الرسالة.`,
+          html: `<div dir="rtl" lang="ar" style="font-family:Arial,sans-serif;line-height:1.8;color:#172554"><h2>إعادة تعيين كلمة المرور</h2><p>وصلنا طلب لإعادة تعيين كلمة مرور حسابك في منصة MK.</p><p><a href="${link}" style="display:inline-block;padding:12px 20px;border-radius:10px;background:#315efb;color:#fff;text-decoration:none">اختيار كلمة مرور جديدة</a></p><p>الرابط صالح لمدة 20 دقيقة ويُستخدم مرة واحدة.</p><p>إذا لم تطلب ذلك، تجاهل هذه الرسالة.</p></div>`,
         });
       } catch (error) {
         await pool.query('UPDATE password_reset_tokens SET used_at=now() WHERE token_hash=$1 AND used_at IS NULL', [tokenHash]).catch(() => {});
         console.error('[password-reset-email] delivery failed:', error instanceof Error ? error.name : 'unknown error');
-        fail(503, 'تعذر إرسال رسالة الاستعادة الآن؛ حاول لاحقًا أو تواصل مع إدارة المدرسة');
+        fail(503, 'تعذر إرسال رسالة الاستعادة الآن؛ حاول لاحقًا أو تواصل مع إدارة المنصة');
       }
     }
     // Use the same successful response for known and unknown accounts to prevent account discovery.
@@ -911,12 +911,13 @@ function cleanProfile(input: any, fallback: Record<string, unknown> = {}): Recor
 }
 async function hydrateAccountProfiles(rawState: any): Promise<any> {
   const state = rawState && typeof rawState === 'object' && !Array.isArray(rawState) ? structuredClone(rawState) : {};
-  for (const key of ['students','teachers','parents']) if (!Array.isArray(state[key])) state[key] = [];
-  const rows = await pool.query(`SELECT u.id,u.role,u.email,u.active,COALESCE(p.profile_data,'{}'::jsonb) AS profile_data FROM video_users u LEFT JOIN video_user_profiles p ON p.user_id=u.id WHERE u.role IN ('student','teacher','parent') ORDER BY u.id`);
+  for (const key of ['students','parents']) if (!Array.isArray(state[key])) state[key] = [];
+  state.teachers = [];
+  const rows = await pool.query(`SELECT u.id,u.role,u.email,u.active,COALESCE(p.profile_data,'{}'::jsonb) AS profile_data FROM video_users u LEFT JOIN video_user_profiles p ON p.user_id=u.id WHERE u.role IN ('student','parent') ORDER BY u.id`);
   const relationRows = await pool.query(`SELECT parent_id, array_agg(student_id ORDER BY student_id) AS student_ids FROM parent_student_links WHERE active=TRUE GROUP BY parent_id`);
   const parentLinks = new Map<string, string[]>();
   for (const item of relationRows.rows) parentLinks.set(String(item.parent_id), Array.isArray(item.student_ids) ? item.student_ids.map(String) : []);
-  const targetByRole: Record<string, string> = { student: 'students', teacher: 'teachers', parent: 'parents' };
+  const targetByRole: Record<string, string> = { student: 'students', parent: 'parents' };
   for (const row of rows.rows) {
     const listKey = targetByRole[String(row.role)]; if (!listKey) continue;
     const target: any[] = state[listKey];
@@ -1078,7 +1079,7 @@ app.get('/api/v1/platform/state', async (req, res, next) => {
         withSubmissions.courseProgress[key] = indexes;
       }
     }
-    const hasAccounts = ['students','teachers','parents'].some(key => Array.isArray(withSubmissions[key]) && withSubmissions[key].length > 0);
+    const hasAccounts = ['students','parents'].some(key => Array.isArray(withSubmissions[key]) && withSubmissions[key].length > 0);
     const revision = Number(meta.rows[0]?.revision ?? 0);
     if (Object.keys(raw).length === 0 && !hasAccounts && !withSubmissions.examResults.length) { res.json({ status: 'EMPTY', state: {}, revision, updated_at: meta.rows[0]?.updated_at || null }); return; }
     res.json({ status: 'OK', state: filterState(withSubmissions, claims, parentIds), revision, updated_at: meta.rows[0]?.updated_at || null });
@@ -1087,7 +1088,7 @@ app.get('/api/v1/platform/state', async (req, res, next) => {
 app.post('/api/v1/platform/state', async (req, res, next) => {
   const client = await pool.connect();
   try {
-    const claims = bearer(req); if (!['admin','teacher','student','parent'].includes(claims.role)) fail(403, 'platform access denied'); await requireDeviceSession(claims);
+    const claims = bearer(req); if (!['admin','student','parent'].includes(claims.role)) fail(403, 'platform access denied'); await requireDeviceSession(claims);
     const changes = req.body?.changes;
     const legacyState = req.body?.state;
     if (changes == null && (!legacyState || typeof legacyState !== 'object')) fail(400, 'state changes are required');
@@ -1225,7 +1226,7 @@ async function loadAssignedExam(client: PoolClient, studentId: string, examId: s
   const teacherId = str(exam.teacher || exam.teacherId).trim();
   const questions = exam.questions.map((question: unknown) => {
     try { return normalizeExamQuestion(question, Number(exam.questionPoints || 1)); }
-    catch { return fail(409, 'يوجد سؤال بإعدادات غير صالحة؛ اطلب من المدرس مراجعة الاختبار'); }
+    catch { return fail(409, 'يوجد سؤال بإعدادات غير صالحة؛ اطلب من إدارة المنصة مراجعة الاختبار'); }
   });
   return { exam, examGrade, teacherId, questions };
 }
@@ -1488,9 +1489,9 @@ app.post('/api/v1/platform/courses/watch-progress', async (req, res, next) => {
     const { lesson } = await requireReleasedCourseLesson(client, claims.sub, courseId, lessonIndex, state);
     if (!str(lesson.videoRef || lesson.videoUrl).trim()) fail(400, 'هذا الدرس لا يحتوي فيديو');
     const trustedDuration = await trustedCourseDuration(lesson);
-    if (trustedDuration === null) return fail(409, 'يجب على إدارة المدرسة تحديد مدة الفيديو قبل اعتماد المشاهدة');
+    if (trustedDuration === null) return fail(409, 'يجب على إدارة المنصة تحديد مدة الفيديو قبل اعتماد المشاهدة');
     const duration: number = trustedDuration;
-    if (Math.abs(reportedDuration - duration) > Math.max(3, Math.ceil(duration * 0.05))) fail(400, 'مدة الفيديو لا تطابق المدة المعتمدة من إدارة المدرسة');
+    if (Math.abs(reportedDuration - duration) > Math.max(3, Math.ceil(duration * 0.05))) fail(400, 'مدة الفيديو لا تطابق المدة المعتمدة من إدارة المنصة');
     if (position > duration) fail(400, 'موضع الفيديو يتجاوز مدته المعتمدة');
     const previous = (await client.query('SELECT watched_seconds,duration_seconds,last_position_seconds,heartbeat_at,playing,completed_at FROM course_lesson_watch_progress WHERE course_id=$1 AND student_id=$2 AND lesson_index=$3 FOR UPDATE', [courseId, claims.sub, lessonIndex])).rows[0];
     const heartbeatAt = previous?.heartbeat_at ? new Date(previous.heartbeat_at).getTime() : 0;
@@ -1558,7 +1559,7 @@ async function hasValidFileSignature(filePath: string, extension: string): Promi
 const schoolFilesRoot = path.join(MEDIA_ROOT, 'school-files');
 async function canReadExamQuestionFile(claims: Claims, file: any): Promise<boolean> {
   if (file.purpose !== 'exam-question') return canReadSchoolFile(claims, file);
-  if (claims.role === 'admin' || (claims.role === 'teacher' && claims.sub === file.owner_id)) return true;
+  if (claims.role === 'admin') return true;
   if (claims.role !== 'student' && claims.role !== 'parent') return false;
   const state = await readPlatformState(pool);
   const parentIds = claims.role === 'parent'
@@ -2030,7 +2031,7 @@ app.post('/api/v1/ai/deep-search', aiLimiter, async (req,res,next) => {
     // Send only educational fields to the third-party AI provider; exclude identifiers,
     // names, contact details, birthdays, student codes, files and secret material.
     const context = minimizeAiContext(scopedState, 60000);
-    const messages=[{role:'system',content:'You are a precise educational tutor. Explain clearly, distinguish facts from uncertainty, and never claim to have browsed the web unless browsing data was actually provided. Answer in the student\'s language. The school context is minimized and may omit identifying details; never infer missing personal information.'},...history,{role:'user',content:`بيانات تعليمية مصرح بها من منصة MK School (تم حذف المعرفات والبيانات الشخصية):\n${context}\n\nQuestion: ${prompt}`}];
+    const messages=[{role:'system',content:'You are a precise educational tutor. Explain clearly, distinguish facts from uncertainty, and never claim to have browsed the web unless browsing data was actually provided. Answer in the student\'s language. The learning context is minimized and may omit identifying details; never infer missing personal information.'},...history,{role:'user',content:`بيانات تعليمية مصرح بها من منصة MK (تم حذف المعرفات والبيانات الشخصية):\n${context}\n\nQuestion: ${prompt}`}];
     const response=await fetch('https://api.groq.com/openai/v1/chat/completions',{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model:GROQ_MODEL,messages,temperature:0.2,max_tokens:1024}),signal:AbortSignal.timeout(20000)});
     if(!response.ok) fail(response.status===429?429:502,'AI provider rejected the request'); const data:any=await response.json(); res.json({status:'OK',reply:str(data?.choices?.[0]?.message?.content)||'No answer returned.',confidence_mode:'MODEL_ONLY_NO_WEB_VERIFICATION'});
   } catch(e) { next(e); }

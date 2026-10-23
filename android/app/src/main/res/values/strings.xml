@@ -1,7 +1,7 @@
 <?xml version='1.0' encoding='utf-8'?>
 <resources>
-    <string name="app_name">MK School</string>
-    <string name="title_activity_main">MK School</string>
+    <string name="app_name">منصة MK التعليمية</string>
+    <string name="title_activity_main">منصة MK التعليمية</string>
     <string name="package_name">com.mkschool.mobile</string>
     <string name="custom_url_scheme">com.mkschool.mobile</string>
 </resources>

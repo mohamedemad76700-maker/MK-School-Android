@@ -50,11 +50,17 @@ const frontendScripts = sourceFiles
   .map((relative) => fs.readFileSync(path.join(webDir, relative), 'utf8'))
   .join('\n');
 const backendSource = read('video_engine_backend/src/main.ts');
+const teacherRemovalMigration = read('video_engine_backend/migrations/0020_remove_teacher_accounts.sql');
 assert.match(html, /data-mk-click="mkTogglePassword\('loginPass'\)"/, 'login must provide an accessible show-password control');
 assert.match(frontendScripts, /function mkSaveExamGameSettings\(/, 'admin must be able to save age-group exam game settings');
 assert.match(frontendScripts, /function mkExamGameForGrade\(/, 'exam games must follow the student age group');
 assert.match(frontendScripts, /window\.mkVideoQuality=function/, 'video quality selector must change HLS playback quality');
 assert.doesNotMatch(frontendScripts, /teacherClasses\(|saveClassTeachers|removeFromClass/, 'classroom system actions must stay removed');
+assert.match(frontendScripts, /window\.mkRenderCourseMarket=window\.pages\.courses;/, 'the enhanced course market must remain available');
+assert.match(frontendScripts, /window\.mkFilterCourseSubject=function/, 'the course market must retain its subject filter');
+assert.match(frontendScripts, /delete platformTabsByRole\.teacher;/, 'the platform must not expose teacher navigation');
+assert.match(backendSource, /const ALLOWED_ROLES = new Set\(\['student', 'admin', 'parent'\]\)/, 'the API must reject retired teacher accounts');
+assert.match(teacherRemovalMigration, /DELETE FROM video_users WHERE role = 'teacher'/, 'deployment migration must remove retired teacher accounts');
 assert.match(backendSource, /app\.get\('\/api\/v1\/videos\/:video_id\/playlist\/:variant'/, 'backend must serve protected HLS quality playlists');
 const frontendApiPaths = new Set([...frontendScripts.matchAll(/[\x27\x22\x60](\/api\/v1\/[^\x27\x22\x60\s]*)[\x27\x22\x60]/g)]
   .map((match) => match[1].split('?')[0].replace(/\/$/, '')));

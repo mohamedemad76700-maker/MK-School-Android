@@ -7,13 +7,12 @@
   const roleOf=x=>{
     if(!x)return '';
     if(String(x.id)==='admin')return 'admin';
-    if((db.teachers||[]).some(t=>String(t.id)===String(x.id)))return 'teacher';
     if((db.students||[]).some(t=>String(t.id)===String(x.id)))return 'student';
     if((db.parents||[]).some(t=>String(t.id)===String(x.id)))return 'parent';
     return String(x.role||'').toLowerCase();
   };
   function actors(){
-    const raw=[db.users&&db.users.admin,...(db.teachers||[]),...(db.students||[]),...(db.parents||[])];
+    const raw=[db.users&&db.users.admin,...(db.students||[]),...(db.parents||[])];
     const seen=new Set();
     return raw.filter(x=>x&&x.id&&x.active!==false).map(x=>({...x,role:roleOf(x)})).filter(x=>{const k=String(x.id);if(seen.has(k))return false;seen.add(k);return true});
   }
@@ -77,7 +76,7 @@
   window.mkMessageModal=function(){
     const users=actors().filter(x=>String(x.id)!==String(current.id));
     if(!users.length)return toast('لا يوجد مستخدمون متاحون للمراسلة');
-    openModal('<h3>✉️ رسالة جديدة</h3><form data-mk-submit="mkSendMessage(event)"><div class="field"><label>إلى</label><select id="mkMsgTo" required>'+users.map(x=>'<option value="'+esc(x.id)+'">'+esc(x.name||x.email||x.id)+' — '+esc({admin:'مدير',teacher:'مدرس',student:'طالب',parent:'ولي أمر'}[roleOf(x)]||'مستخدم')+'</option>').join('')+'</select></div><div class="field"><label>الرسالة</label><textarea id="mkMsgText" rows="6" required></textarea></div><button class="btn primary">إرسال الرسالة</button></form>');
+    openModal('<h3>✉️ رسالة جديدة</h3><form data-mk-submit="mkSendMessage(event)"><div class="field"><label>إلى</label><select id="mkMsgTo" required>'+users.map(x=>'<option value="'+esc(x.id)+'">'+esc(x.name||x.email||x.id)+' — '+esc({admin:'مدير',student:'طالب',parent:'ولي أمر'}[roleOf(x)]||'مستخدم')+'</option>').join('')+'</select></div><div class="field"><label>الرسالة</label><textarea id="mkMsgText" rows="6" required></textarea></div><button class="btn primary">إرسال الرسالة</button></form>');
   };
   pages.notifications=function(){
     const arr=db.notifications.filter(n=>String(n.to)===String(current.id)).sort((a,b)=>String(b.date).localeCompare(String(a.date)));
@@ -85,7 +84,7 @@
   };
   window.mkNotificationModal=function(){
     if(String(current?.id)!=='admin')return forbidden(); const users=actors().filter(x=>String(x.id)!=='admin');
-    openModal('<h3>🔔 إرسال تنبيه</h3><form data-mk-submit="mkSendDirectNotification(event)"><div class="field"><label>المستلم</label><select id="mkNotTo"><option value="all">كل المستخدمين</option>'+users.map(x=>'<option value="'+esc(x.id)+'">'+esc(x.name||x.id)+' — '+esc({student:'طالب',teacher:'مدرس',parent:'ولي أمر'}[roleOf(x)]||'مستخدم')+'</option>').join('')+'</select></div><div class="field"><label>العنوان</label><input id="mkNotTitle" required></div><div class="field"><label>النص</label><textarea id="mkNotBody" rows="5" required></textarea></div><button class="btn primary">إرسال التنبيه</button></form>');
+    openModal('<h3>🔔 إرسال تنبيه</h3><form data-mk-submit="mkSendDirectNotification(event)"><div class="field"><label>المستلم</label><select id="mkNotTo"><option value="all">كل المستخدمين</option>'+users.map(x=>'<option value="'+esc(x.id)+'">'+esc(x.name||x.id)+' — '+esc({student:'طالب',parent:'ولي أمر'}[roleOf(x)]||'مستخدم')+'</option>').join('')+'</select></div><div class="field"><label>العنوان</label><input id="mkNotTitle" required></div><div class="field"><label>النص</label><textarea id="mkNotBody" rows="5" required></textarea></div><button class="btn primary">إرسال التنبيه</button></form>');
   };
   window.mkSendDirectNotification=function(e){e.preventDefault();if(String(current?.id)!=='admin')return forbidden();const title=document.getElementById('mkNotTitle')?.value.trim(),body=document.getElementById('mkNotBody')?.value.trim(),to=document.getElementById('mkNotTo')?.value;if(!title||!body)return toast('أكمل بيانات التنبيه');if(to==='all')actors().filter(x=>String(x.id)!=='admin').forEach(x=>notify(x.id,title,body));else notify(to,title,body);save();closeModal();showPage('notifications');toast('تم إرسال التنبيه بنجاح');};
   db.announcements.forEach(a=>{if(!a.audience)a.audience='all'});
