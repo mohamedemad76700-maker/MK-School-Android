@@ -18,6 +18,15 @@ test('accepts a public HTTPS service behind a trusted proxy on a private Render 
   assert.deepEqual(validateProductionConfiguration(base), []);
 });
 
+test('accepts Render generated 256-bit base64 JWT secrets', () => {
+  assert.deepEqual(validateProductionConfiguration({ ...base, jwtSecret: 'a'.repeat(43) + '=' }), []);
+});
+
+test('rejects JWT secrets shorter than Render generated 256-bit secrets', () => {
+  const errors = validateProductionConfiguration({ ...base, jwtSecret: 'a'.repeat(43) });
+  assert.ok(errors.some(error => error.includes('at least 44 characters')));
+});
+
 test('rejects public all-interface binding without the trusted proxy setting', () => {
   const errors = validateProductionConfiguration({ ...base, trustProxy: false });
   assert.ok(errors.some(error => error.includes('trusted HTTPS proxy')));

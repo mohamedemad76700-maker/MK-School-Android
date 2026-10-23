@@ -10,7 +10,7 @@
 
 ## الإعداد والتشغيل
 1. من مجلد المشروع الرئيسي شغّل `node video_engine_backend/scripts/init-env.cjs` لإنشاء ملف `.env` خاص في الجذر، أو عيّن متغيرات البيئة مباشرة في منصة الاستضافة.
-2. عدّل `DATABASE_URL` و`REDIS_URL`، وضع `JWT_SECRET` عشوائيًا فريدًا بطول 48 حرفًا أو أكثر. لا تستخدم قيمة القالب.
+2. عدّل `DATABASE_URL` و`REDIS_URL`، وضع `JWT_SECRET` عشوائيًا فريدًا بطول 44 حرفًا أو أكثر (أو استخدم سرًا مشفرًا عشوائيًا بقوة 256 بت). لا تستخدم قيمة القالب.
 3. اضبط `VIDEO_BOOTSTRAP_ADMIN_EMAIL` و`VIDEO_BOOTSTRAP_ADMIN_PASSWORD` لإنشاء حساب المدير الأول عند بدء الخادم لأول مرة.
 4. اضبط `FRONTEND_ORIGIN` على عنوان الموقع الفعلي، وأضف الأصول الإضافية الدقيقة في `FRONTEND_ORIGINS` مفصولة بفواصل. يتضمن القالب أصلَي Android/Capacitor المحليين. لا تستخدم wildcard في CORS.
 5. ابنِ الخادم عبر `npm --prefix video_engine_backend install` ثم `npm --prefix video_engine_backend run build`، وبعدها شغّله من الجذر بـ `node --env-file=.env video_engine_backend/dist/main.js` (Node.js 22+).

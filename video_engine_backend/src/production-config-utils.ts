@@ -24,7 +24,9 @@ export function validateProductionConfiguration(config: ProductionConfiguration)
   if (config.nodeEnv !== 'production') return [];
 
   const issues: string[] = [];
-  if (config.jwtSecret.length < 48) issues.push('JWT_SECRET must contain at least 48 characters in production');
+  // Render's generateValue creates a base64-encoded 256-bit secret (44 chars).
+  // Requiring 48 rejects that secure, platform-generated value and prevents startup.
+  if (config.jwtSecret.length < 44) issues.push('JWT_SECRET must contain at least 44 characters in production');
 
   const frontend = parseUrl(config.frontendOrigin);
   const appBase = parseUrl(config.appBaseUrl);
