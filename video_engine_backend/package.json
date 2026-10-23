@@ -1,0 +1,39 @@
+{
+  "name": "mk-school-backend",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "MK School backend migrated from Rust/Axum to TypeScript/Node.js/Express",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "dev": "tsx watch src/main.ts",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "tsx --test tests/*.test.ts"
+  },
+  "engines": {
+    "node": ">=22 <25"
+  },
+  "dependencies": {
+    "argon2": "^0.41.1",
+    "cors": "^2.8.5",
+    "express": "^4.21.2",
+    "helmet": "^8.0.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.0.0",
+    "nodemailer": "^10.1.0",
+    "pg": "^8.13.1",
+    "redis": "^4.7.0"
+  },
+  "devDependencies": {
+    "@types/cors": "^2.8.17",
+    "@types/express": "^4.17.21",
+    "@types/jsonwebtoken": "^9.0.7",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^22.10.2",
+    "@types/nodemailer": "^8.0.2",
+    "@types/pg": "^8.11.10",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}

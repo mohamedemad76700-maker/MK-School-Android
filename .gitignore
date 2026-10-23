@@ -1,0 +1,38 @@
+# Local JavaScript dependencies and generated backend output
+node_modules/
+**/node_modules/
+video_engine_backend/dist/
+**/coverage/
+
+# Runtime secrets and local configuration
+.env
+.env.*
+!.env.example
+video_engine_backend/.env
+android/local.properties
+*.jks
+*.keystore
+*.pem
+
+# Uploaded media and generated video files
+video_engine_backend/media/
+video_engine_backend/uploads/
+video_engine_backend/data/
+
+# Android and Gradle build output
+.gradle/
+android/.gradle/
+android/**/build/
+*.apk
+*.aab
+
+# Android Studio and local SDK files copied alongside this project
+.idea/
+.temp/
+.knownPackages
+build-tools/
+emulator/
+licenses/
+platform-tools/
+platforms/
+sources/
