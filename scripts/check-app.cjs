@@ -51,6 +51,8 @@ const frontendScripts = sourceFiles
   .join('\n');
 const backendSource = read('video_engine_backend/src/main.ts');
 const teacherRemovalMigration = read('video_engine_backend/migrations/0020_remove_teacher_accounts.sql');
+const courseAdminUI = read('www/assets/js/04-mk-school.js');
+const platformUI = read('www/assets/js/07-platform-library.js');
 assert.match(html, /data-mk-click="mkTogglePassword\('loginPass'\)"/, 'login must provide an accessible show-password control');
 assert.match(frontendScripts, /function mkSaveExamGameSettings\(/, 'admin must be able to save age-group exam game settings');
 assert.match(frontendScripts, /function mkExamGameForGrade\(/, 'exam games must follow the student age group');
@@ -58,6 +60,16 @@ assert.match(frontendScripts, /window\.mkVideoQuality=function/, 'video quality 
 assert.doesNotMatch(frontendScripts, /teacherClasses\(|saveClassTeachers|removeFromClass/, 'classroom system actions must stay removed');
 assert.match(frontendScripts, /window\.mkRenderCourseMarket=window\.pages\.courses;/, 'the enhanced course market must remain available');
 assert.match(frontendScripts, /window\.mkFilterCourseSubject=function/, 'the course market must retain its subject filter');
+assert.equal((courseAdminUI.match(/id="mkCourseSearch"/g) || []).length, 1, 'the course catalog must have a single unified search field');
+assert.doesNotMatch(courseAdminUI, /mkCourseSearchInline/, 'duplicate course search field must stay removed');
+assert.doesNotMatch(html, /mkPlatformTopSearch/, 'global duplicate course search must stay removed');
+assert.doesNotMatch(frontendScripts, /mk-platform-top-search|mkPlatformTopSearch/, 'obsolete topbar course search must stay removed');
+assert.match(courseAdminUI, /data-subject="\$\{esc\(c\.subject\|\|''\)\}"/, 'course cards must expose their subject to the catalog filters');
+assert.match(courseAdminUI, /\(!subject\|\|card\.dataset\.subject===subject\)/, 'the catalog subject filter must affect visible results');
+assert.match(courseAdminUI, /id="coInstructor" maxlength="120" required/, 'course creation must require an instructor name');
+assert.match(platformUI, /platformTabsByRole\.parent=platformTabsByRole\.parent\.filter\(item=>item\[0\]!=='courses'\)/, 'parent navigation must not expose course browsing');
+assert.match(backendSource, /app\.get\('\/api\/v1\/platform\/student\/streak'/, 'learning streak must be served from the authenticated backend');
+assert.match(backendSource, /student_learning_activity_days\(student_id,activity_date\)/, 'streak activity must be server-recorded');
 assert.match(frontendScripts, /delete platformTabsByRole\.teacher;/, 'the platform must not expose teacher navigation');
 assert.match(backendSource, /const ALLOWED_ROLES = new Set\(\['student', 'admin', 'parent'\]\)/, 'the API must reject retired teacher accounts');
 assert.match(teacherRemovalMigration, /DELETE FROM video_users WHERE role = 'teacher'/, 'deployment migration must remove retired teacher accounts');

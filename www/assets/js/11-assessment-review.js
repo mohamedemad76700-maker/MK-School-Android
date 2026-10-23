@@ -4,17 +4,6 @@
   const byStudent = (id) => (db.submissions || []).find(item => String(item.assignment) === String(id) && String(item.student) === String(current?.id));
   const esc = value => window.esc(String(value ?? ''));
 
-  const originalRenderPage = window.renderPage;
-  window.renderPage = function () {
-    const catalogSearch = document.querySelector('.mk-platform-top-search');
-    if (catalogSearch) {
-      catalogSearch.hidden = current?.role === 'parent';
-      if (catalogSearch.hidden) catalogSearch.style.display = 'none';
-      else catalogSearch.style.removeProperty('display');
-    }
-    return originalRenderPage?.();
-  };
-
   window.submitAssignment = function (id) {
     if (!isStudent()) return window.forbidden?.();
     const assignment = (db.assignments || []).find(item => String(item.id) === String(id));

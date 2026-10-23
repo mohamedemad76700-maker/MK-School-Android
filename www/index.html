@@ -218,6 +218,14 @@ button:focus-visible,input:focus-visible,select:focus-visible,textarea:focus-vis
 .mk-lesson-actions .btn:disabled{opacity:.45;cursor:not-allowed}
 @media(max-width:650px){.mk-course-form .form-grid{grid-template-columns:minmax(0,1fr)}.mk-course-modal .section-head{align-items:center}.mk-course-form .mk-lesson-row.card{padding:12px}.mk-course-form input[type=file]{font-size:12px}}
 </style>
+<style id="mk-learning-streak">
+  .mk-streak-card{overflow:hidden;background:linear-gradient(130deg,var(--surface),color-mix(in srgb,#ff9f43 8%,var(--surface)))}
+  .mk-learning-streak{display:grid;gap:14px;min-height:72px;align-content:center}
+  .mk-streak-summary{display:flex;align-items:center;gap:13px}.mk-streak-summary>div{display:grid;gap:2px;flex:1}.mk-streak-summary strong{font-size:23px;color:#c06c17}.mk-streak-icon{display:grid;place-items:center;width:48px;height:48px;border-radius:16px;background:#fff2df;font-size:26px}
+  .mk-streak-week{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:8px}.mk-streak-week>span{display:grid;justify-items:center;gap:5px;padding:9px 3px;border:1px solid var(--line);border-radius:13px;background:var(--surface2);color:var(--muted)}.mk-streak-week>span.active{border-color:#f0b86a;background:#fff6e8;color:#a85d0b}.mk-streak-week i{display:grid;place-items:center;width:29px;height:29px;border-radius:50%;background:#e9edf4;font-style:normal;font-weight:900}.mk-streak-week .active i{background:#f3a53b;color:#fff}.mk-streak-week small{font-size:11px}
+  .dark .mk-streak-card{background:linear-gradient(130deg,var(--surface),#50351733)}.dark .mk-streak-icon{background:#633d1a;color:#ffe0b2}.dark .mk-streak-week>span.active{background:#4a351f;color:#ffe0b2}
+  @media(max-width:540px){.mk-streak-card{padding:16px}.mk-streak-week{gap:5px}.mk-streak-week>span{padding:7px 1px}.mk-streak-week small{font-size:10px}.mk-streak-summary strong{font-size:20px}}
+</style>
 <style id="mk-platform-polish">
 .platform-sections{display:flex;flex-wrap:wrap;gap:10px;padding:10px;margin:0 0 18px;background:var(--surface);border:1px solid var(--line);border-radius:18px;box-shadow:0 6px 24px #17203308}
 .platform-sections button{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:10px 16px;border:1px solid transparent;border-radius:13px;background:transparent;color:var(--muted);font-weight:800;transition:background .18s,color .18s,transform .18s}
@@ -262,10 +270,6 @@ body.mk-platform-active #sideToggleBtn{display:none!important}
 body.mk-platform-active .logo-mini{color:#fff}
 body.mk-platform-active .logo-mini span{background:#ffffff;color:#315efb;box-shadow:0 5px 18px #101d4f40}
 body.mk-platform-active .top-actions .icon-btn,body.mk-platform-active .top-actions .font-toggle{background:#ffffff18;border-color:#ffffff38;color:#fff}
-.mk-platform-top-search{display:none;flex:1;align-items:center;gap:10px;max-width:560px;min-width:120px;height:46px;margin-inline:auto;padding:0 15px;border:1px solid #e3e9f2;border-radius:15px;background:var(--surface);box-shadow:0 5px 18px #1720330a;color:var(--primary)}
-.mk-platform-top-search input{width:100%;min-width:0;border:0;outline:0;background:transparent;color:var(--text);font-size:15px}
-.mk-platform-top-search input::placeholder{color:#8993a5}
-body.mk-platform-active .mk-platform-top-search{display:flex}
 body.mk-platform-active .platform-search{display:none!important}
 .mk-platform-menu-wrap{position:relative;display:none;z-index:30}
 body.mk-platform-active .mk-platform-menu-wrap{display:block}
@@ -286,8 +290,8 @@ body.mk-platform-active .mk-platform-menu-wrap{position:relative;inset:auto;tran
 .mk-platform-menu button .mk-menu-icon{display:grid;place-items:center;width:32px;height:32px;flex:none;border-radius:10px;background:#eef3ff;font-size:16px}
 .mk-platform-menu button.active .mk-menu-icon{background:#315efb;color:#fff}
 .mk-platform-menu-trigger:focus-visible,.mk-platform-menu button:focus-visible{outline:3px solid #76a0ff;outline-offset:2px}
-@media(max-width:700px){body.mk-platform-active .topbar-inner{gap:7px;padding-inline:10px}.mk-platform-top-search{flex:1 1 120px;height:42px;min-width:0;padding-inline:9px;margin-inline:0}.mk-platform-menu-wrap{position:relative;inset:auto;transform:none;flex:0 0 auto}.mk-platform-menu-trigger{width:42px;height:42px}.mk-platform-points-pill{gap:4px;padding:7px 9px;font-size:11px}.top-actions{gap:4px}.top-actions .font-toggle{display:none}.top-actions .icon-btn{width:36px;height:36px;border-radius:11px}.logo-mini{font-size:0;gap:0}.logo-mini span{width:38px;height:38px}}
-@media(max-width:430px){.mk-platform-points-pill span{display:none}.mk-platform-top-search{padding-inline:7px}.mk-platform-top-search input{font-size:13px}}
+@media(max-width:700px){body.mk-platform-active .topbar-inner{gap:7px;padding-inline:10px}.mk-platform-menu-wrap{position:relative;inset:auto;transform:none;flex:0 0 auto}.mk-platform-menu-trigger{width:42px;height:42px}.mk-platform-points-pill{gap:4px;padding:7px 9px;font-size:11px}.top-actions{gap:4px}.top-actions .font-toggle{display:none}.top-actions .icon-btn{width:36px;height:36px;border-radius:11px}.logo-mini{font-size:0;gap:0}.logo-mini span{width:38px;height:38px}}
+@media(max-width:430px){.mk-platform-points-pill span{display:none}}
 body.mk-platform-only .layout{width:min(1320px,100%);grid-template-columns:minmax(0,1fr);gap:0;padding:20px}
 body.mk-platform-only #sidebar{display:none!important}
 body.mk-platform-only .main{width:100%;min-width:0}
@@ -295,7 +299,6 @@ body.mk-platform-only .logo-mini{color:#fff}
 body.mk-platform-only .logo-mini span{background:#fff;color:#315efb;box-shadow:0 5px 18px #101d4f40}
 body.mk-platform-only .topbar{background:linear-gradient(110deg,#192f78,#315efb 62%,#6048df);border-bottom-color:#315efb;box-shadow:0 8px 24px #233c942e}
 body.mk-platform-only .top-actions .icon-btn,body.mk-platform-only .top-actions .font-toggle{background:#ffffff18;border-color:#ffffff38;color:#fff}
-body.mk-platform-only .mk-platform-top-search{display:flex}
 body.mk-platform-only .platform-search{display:none!important}
 body.mk-platform-only .mk-platform-menu-wrap{display:block}
 body.mk-platform-only .mk-platform-points-pill:not([hidden]){display:inline-flex}
@@ -425,7 +428,7 @@ body.mk-platform-only #main{width:100%;max-width:1240px;margin-inline:auto;min-w
   </div>
 </div>
 <div id="app" class="app">
-  <header class="topbar"><div class="topbar-inner"><button id="sideToggleBtn" class="icon-btn" data-mk-click="toggleSide()" aria-label="فتح قائمة التنقل" aria-controls="sidebar" aria-expanded="false">☰</button><div class="logo-mini"><span>MK</span> MK Platform</div><label class="mk-platform-top-search" aria-label="البحث في الدورات والمحاضرات"><span aria-hidden="true">⌕</span><input id="mkPlatformTopSearch" type="search" placeholder="ابحث هنا عن دورة أو محاضرة…" data-mk-input="mkPlatformCatalogSearch(this.value)"></label><div class="mk-platform-points-pill" id="mkPlatformPointsPill" hidden aria-label="رصيد نقاطك">⭐ <b id="mkPlatformPointsValue">0</b><span>نقطة</span></div><div class="mk-platform-menu-wrap" id="mkPlatformMenuWrap"><button class="mk-platform-menu-trigger" id="mkPlatformMenuTrigger" type="button" aria-label="فتح أقسام المنصة" aria-haspopup="menu" aria-expanded="false" data-mk-click="mkTogglePlatformMenu()">⋮</button><div class="mk-platform-menu" id="mkPlatformMenu" role="menu" aria-label="أقسام المنصة"></div></div><div class="top-actions"><button class="font-toggle" id="fontToggleBtn" data-mk-click="cycleFontSize()" title="حجم الخط" aria-label="تغيير حجم الخط">A</button><button class="icon-btn" data-mk-click="toggleTheme()" aria-label="تغيير المظهر">◐</button><button class="icon-btn" data-mk-click="showPage('notifications')" aria-label="التنبيهات">🔔</button><button class="icon-btn hide-mobile" data-mk-click="showPage('messages')" aria-label="الرسائل">✉️</button></div></div></header>
+  <header class="topbar"><div class="topbar-inner"><button id="sideToggleBtn" class="icon-btn" data-mk-click="toggleSide()" aria-label="فتح قائمة التنقل" aria-controls="sidebar" aria-expanded="false">☰</button><div class="logo-mini"><span>MK</span> MK Platform</div><div class="mk-platform-points-pill" id="mkPlatformPointsPill" hidden aria-label="رصيد نقاطك">⭐ <b id="mkPlatformPointsValue">0</b><span>نقطة</span></div><div class="mk-platform-menu-wrap" id="mkPlatformMenuWrap"><button class="mk-platform-menu-trigger" id="mkPlatformMenuTrigger" type="button" aria-label="فتح أقسام المنصة" aria-haspopup="menu" aria-expanded="false" data-mk-click="mkTogglePlatformMenu()">⋮</button><div class="mk-platform-menu" id="mkPlatformMenu" role="menu" aria-label="أقسام المنصة"></div></div><div class="top-actions"><button class="font-toggle" id="fontToggleBtn" data-mk-click="cycleFontSize()" title="حجم الخط" aria-label="تغيير حجم الخط">A</button><button class="icon-btn" data-mk-click="toggleTheme()" aria-label="تغيير المظهر">◐</button><button class="icon-btn" data-mk-click="showPage('notifications')" aria-label="التنبيهات">🔔</button><button class="icon-btn hide-mobile" data-mk-click="showPage('messages')" aria-label="الرسائل">✉️</button></div></div></header>
   <div class="layout"><aside id="sidebar" class="sidebar" aria-label="قائمة التنقل الرئيسية"></aside><main id="main" class="main" tabindex="-1"></main></div>
 </div>
 <div id="modal" class="modal" role="dialog" aria-modal="true" aria-hidden="true" aria-label="نافذة حوارية" data-mk-close-on-backdrop="true"><div id="modalBox" class="modal-box" tabindex="-1"></div></div>
@@ -442,13 +445,13 @@ body.mk-platform-only #main{width:100%;max-width:1240px;margin-inline:auto;min-w
 <script src="assets/js/03-mk-school.js?v=20261019-2"></script>
 
 <script src="assets/js/vendor/hls.min.js?v=1.7.3"></script>
-<script src="assets/js/04-mk-school.js?v=20261023-1"></script>
+<script src="assets/js/04-mk-school.js?v=20261023-4"></script>
 <script src="assets/js/05-mk-school.js?v=20261019-3"></script>
 
-<script src="assets/js/06-mk-school.js?v=20261022-1"></script>
-<script src="assets/js/07-platform-library.js?v=20261019-2"></script>
+<script src="assets/js/06-mk-school.js?v=20261023-2"></script>
+<script src="assets/js/07-platform-library.js?v=20261023-3"></script>
 <script src="assets/js/08-admin-control.js?v=20261023-1"></script>
-<script src="assets/js/09-secure-events.js?v=20261023-1"></script>
+<script src="assets/js/09-secure-events.js?v=20261023-2"></script>
 <script src="assets/js/10-ai-assistant-bubble.js?v=20261023-1"></script>
-<script src="assets/js/11-assessment-review.js?v=20261023-1"></script>
+<script src="assets/js/11-assessment-review.js?v=20261023-2"></script>
 </body></html>

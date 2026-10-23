@@ -243,7 +243,6 @@ if (typeof autoLoginLastAccount === 'function') setTimeout(() => { void autoLogi
       </div>`;
   };
 
-  window.mkPlatformCatalogSearch=function(v){window.mkPlatformCatalogQuery=String(v||'');renderPage();setTimeout(function(){const el=document.getElementById('mkPlatformTopSearch');if(el){el.value=window.mkPlatformCatalogQuery;el.focus();try{el.setSelectionRange(el.value.length,el.value.length)}catch{}}},0)};
   window.mkPlatformSetView=function(){window.mkPlatformView='catalog';renderPage()};
   window.pages.courses=function(){return typeof window.mkRenderCourseMarket==='function'?window.mkRenderCourseMarket():'<div class="card empty">كتالوج الدورات غير متاح حاليًا.</div>';};
 

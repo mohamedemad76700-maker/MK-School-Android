@@ -14,6 +14,7 @@ import { mkdir, readFile, readdir, realpath, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normalizeExamQuestion, normalizeExamChallengeLimit, publicExamQuestionForStudent, gradeExamAnswers, normalizeSubmittedExamAnswers, incorrectExamQuestionIndexes, validateExamRetryAnswers, buildExamAnswerReview, isCourseExamEnrolled } from './exam-utils.js';
+import { summarizeLearningStreak } from './learning-streak-utils.js';
 import { nextVideoViewCount } from './video-view-utils.js';
 import { exceedsAiDailyLimit, filterAiCoursesForEnrolledStudents, minimizeAiContext } from './ai-context-utils.js';
 import { applyPlatformStateChanges } from './platform-state-utils.js';
@@ -1602,6 +1603,7 @@ app.post('/api/v1/platform/courses/watch-progress', async (req, res, next) => {
       const course = (Array.isArray(state.courses) ? state.courses : []).find((item: any) => String(item?.id) === courseId);
       await client.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))', [claims.sub, courseId]);
       const insertedCompletion = await client.query('INSERT INTO course_lesson_completions(course_id,student_id,lesson_index) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING lesson_index', [courseId, claims.sub, lessonIndex]);
+      if (insertedCompletion.rowCount) await client.query("INSERT INTO student_learning_activity_days(student_id,activity_date) VALUES($1,(now() AT TIME ZONE 'Africa/Cairo')::date) ON CONFLICT DO NOTHING", [claims.sub]);
       const completed = await client.query('SELECT lesson_index FROM course_lesson_completions WHERE course_id=$1 AND student_id=$2 ORDER BY lesson_index', [courseId, claims.sub]);
       completedIndexes = completed.rows.map((row: any) => Number(row.lesson_index));
       courseComplete = courseLessonsComplete(Array.isArray(course?.lessons) ? course.lessons.length : 0, completedIndexes);
@@ -1625,6 +1627,17 @@ app.post('/api/v1/platform/courses/watch-progress', async (req, res, next) => {
     if (awarded) await audit(claims.sub, 'course_points_earned', `course=${courseId};points=${awarded}`);
     res.json({ status: 'OK', watched_seconds: progress.watchedSeconds, duration_seconds: progress.durationSeconds, completed: complete, accepted_position_seconds: progress.acceptedPositionSeconds, ...(complete ? { completed_indexes: completedIndexes, course_complete: courseComplete, awarded, balance } : {}) });
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); next(e); } finally { client.release(); }
+});
+app.get('/api/v1/platform/student/streak', async (req, res, next) => {
+  try {
+    const claims = bearer(req); await requireDeviceSession(claims);
+    if (claims.role !== 'student') fail(403, 'سجل التعلم متاح لحساب الطالب فقط');
+    const result = await pool.query("SELECT (now() AT TIME ZONE 'Africa/Cairo')::date::text AS today");
+    const today = str(result.rows[0]?.today);
+    const history = await pool.query('SELECT activity_date::text AS activity_date FROM student_learning_activity_days WHERE student_id=$1 ORDER BY activity_date DESC LIMIT 5000', [claims.sub]);
+    res.setHeader('Cache-Control', 'no-store');
+    res.json(summarizeLearningStreak(history.rows.map((row: any) => row.activity_date), today));
+  } catch (e) { next(e); }
 });
 app.post('/api/v1/platform/rewards/redeem', async (req, res, next) => {
   const client = await pool.connect(); try {
