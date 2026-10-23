@@ -8,7 +8,7 @@ AS $$
   SELECT CASE jsonb_typeof(value)
     WHEN 'object' THEN COALESCE((
       SELECT jsonb_object_agg(key, jsonb_remove_class_fields(nested))
-      FROM jsonb_each(value)
+      FROM jsonb_each(value) AS entries(key, nested)
       WHERE lower(key) NOT IN ('classes', 'classid', 'class_id')
     ), '{}'::jsonb)
     WHEN 'array' THEN COALESCE((
