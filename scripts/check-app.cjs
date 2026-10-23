@@ -66,6 +66,7 @@ assert.doesNotMatch(html, /mkPlatformTopSearch/, 'global duplicate course search
 assert.doesNotMatch(frontendScripts, /mk-platform-top-search|mkPlatformTopSearch/, 'obsolete topbar course search must stay removed');
 assert.match(courseAdminUI, /data-subject="\$\{esc\(c\.subject\|\|''\)\}"/, 'course cards must expose their subject to the catalog filters');
 assert.match(courseAdminUI, /\(!subject\|\|card\.dataset\.subject===subject\)/, 'the catalog subject filter must affect visible results');
+assert.doesNotMatch(courseAdminUI, /cards\|\|'<div class="empty"[^']*لا توجد دورات منشورة حاليًا/, 'the course catalog must render only one empty state');
 assert.match(courseAdminUI, /id="coInstructor" maxlength="120" required/, 'course creation must require an instructor name');
 assert.match(platformUI, /platformTabsByRole\.parent=platformTabsByRole\.parent\.filter\(item=>item\[0\]!=='courses'\)/, 'parent navigation must not expose course browsing');
 assert.match(backendSource, /app\.get\('\/api\/v1\/platform\/student\/streak'/, 'learning streak must be served from the authenticated backend');
