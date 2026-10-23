@@ -297,7 +297,7 @@ function finishLogin(u,auto=false){
   audit('login',`${auto?'دخول مباشر':'تسجيل دخول'} ${current.role}`);
   document.getElementById('auth').style.display='none';
   document.getElementById('app').style.display='block';
-  document.body.classList.add('mk-platform-only');renderSide();showPage('courses');
+  document.body.classList.add('mk-platform-only');renderSide();showPage(current.role==='parent'?'dashboard':'courses');
   if(!auto)toast('مرحبًا بك في منصة MK التعليمية');
   return true;
 }
@@ -324,7 +324,7 @@ async function login(e){
   if(live&&live.active===false){logout();toast('الحساب متوقف أو ينتظر اعتماد إدارة المنصة.');return false;}
   if(live)current={...live,id:String(dataId),role:String(dataRole)};
   __mkAuthReady=true;
-  document.body.classList.add('mk-platform-only');renderSide();showPage('courses');
+  document.body.classList.add('mk-platform-only');renderSide();showPage(current.role==='parent'?'dashboard':'courses');
   window.mkStartServerStateCoordinator?.();
   toast('مرحبًا بك في منصة MK التعليمية');
   return true;
@@ -339,7 +339,7 @@ async function autoLoginLastAccount(){
   const pulled=await window.mkBackendPullPlatform?.();if(!pulled)throw new Error(window.__mkBackendLastError||'تعذر تحميل بيانات المنصة');
   const live=[...(db.students||[]),...(db.teachers||[]),...(db.parents||[]),...Object.values(db.users||{})].find(x=>String(x.id)===String(data.user_id));
   if(live?.active===false)throw new Error('الحساب متوقف أو ينتظر اعتماد الإدارة');if(live)current={...live,id:String(data.user_id),role:String(data.role)};
-  __mkAuthReady=true;document.body.classList.add('mk-platform-only');renderSide();showPage('courses');window.mkStartServerStateCoordinator?.();return true;
+  __mkAuthReady=true;document.body.classList.add('mk-platform-only');renderSide();showPage(current.role==='parent'?'dashboard':'courses');window.mkStartServerStateCoordinator?.();return true;
  }catch(error){mkRuntimeRemoveItem('mk_video_jwt');current=null;__mkAuthReady=false;document.body.classList.remove('mk-platform-only','mk-platform-active');document.getElementById('app').style.display='none';document.getElementById('auth').style.display='grid';console.warn('MK session restore failed',error?.message||error);return false;}
 }
 async function logout(){
@@ -379,48 +379,85 @@ async function startExam(id){
   if(backendConfigured&&!hasBackendToken)return toast('سجّل الدخول إلى الخادم قبل بدء الاختبار لضمان حفظ النتيجة بأمان');
   const serverMode=backendConfigured&&hasBackendToken&&typeof window.mkSubmitExamToBackend==='function';
   const sourceQuestions=Array.isArray(e.questions)?e.questions:[];
+  if(!serverMode&&(e.reviewWrongAnswers===true||sourceQuestions.some(question=>Array.isArray(question?.challengeKeywords)&&question.challengeKeywords.length)))return toast('هذا الاختبار يحتاج اتصالًا بالخادم لتصحيح الإجابات وحفظ المحاولة بأمان.');
   const questions=sourceQuestions.map((raw,qi)=>{
     const q=Array.isArray(raw)?{text:raw[0],options:raw[1],answer:raw[2]??0,points:raw[3]}:(raw||{});
     const base=(Array.isArray(q.options)?q.options:[]).filter(v=>typeof v==='string'&&v.trim()).slice(0,4).map(v=>v.trim());
-     return {text:String(q.text||''),imageFileId:String(q.imageFileId||''),base,localAnswer:Number(q.answer??0),points:Number(q.points||e.questionPoints||1),number:qi+1};
+      return {text:String(q.text||''),imageFileId:String(q.imageFileId||''),base,localAnswer:Number(q.answer??0),challengeEnabled:q.challengeEnabled===true,points:Number(q.points||e.questionPoints||1),number:qi+1};
   });
    if(!questions.length||questions.some(q=>(!q.text&&!q.imageFileId)||q.base.length<2||!Number.isFinite(q.points)||q.points<=0||(!serverMode&&(!Number.isInteger(q.localAnswer)||q.localAnswer<0||q.localAnswer>=q.base.length))))return toast('إعدادات أسئلة الاختبار غير مكتملة؛ اطلب من إدارة المنصة مراجعتها');
-  let serverRemainingSeconds=null;
-  if(serverMode){try{const session=await window.mkStartExamSessionBackend(id);serverRemainingSeconds=Number(session.remaining_seconds);if(!Number.isFinite(serverRemainingSeconds)||serverRemainingSeconds<0)throw new Error('لم يرجع الخادم وقتًا صالحًا للاختبار');}catch(error){toast(error?.message||'تعذر بدء الاختبار على الخادم');return;}}
+   let serverRemainingSeconds=null,backendSession=null;
+   if(serverMode){try{backendSession=await window.mkStartExamSessionBackend(id);serverRemainingSeconds=Number(backendSession.remaining_seconds);if(!Number.isFinite(serverRemainingSeconds)||serverRemainingSeconds<0)throw new Error('لم يرجع الخادم وقتًا صالحًا للاختبار');}catch(error){toast(error?.message||'تعذر بدء الاختبار على الخادم');return;}}
   questions.forEach(q=>{q.options=q.base.map((text,j)=>({text,sourceIndex:j,correct:!serverMode&&j===q.localAnswer}));for(let k=q.options.length-1;k>0;k--){const r=Math.floor(Math.random()*(k+1));[q.options[k],q.options[r]]=[q.options[r],q.options[k]]}});
-  let i=0,answers=Array(questions.length).fill(null),marked=Array(questions.length).fill(false);
+   let i=0,answers=Array(questions.length).fill(null),answerModes=Array(questions.length).fill('choice'),challengeTexts=Array(questions.length).fill(''),priorAnswers=Array(questions.length).fill(null),priorModes=Array(questions.length).fill('choice'),priorChallengeTexts=Array(questions.length).fill(''),retryWrong=[],retryActive=false,marked=Array(questions.length).fill(false);
   let left=Math.max(60,Math.min(180,Number(e.duration)||30)*60),finished=false,submitting=false;
   if(serverMode)left=Math.min(left,serverRemainingSeconds);
   const stateKey='mk_exam_progress_'+current.id+'_'+id;
   try{
     const saved=JSON.parse(mkRuntimeGetItem(stateKey)||'null');
     if(saved&&Array.isArray(saved.answers)&&saved.answers.length===questions.length){
-      answers=saved.answers.map(v=>Number.isInteger(v)&&v>=0?v:null);marked=Array.isArray(saved.marked)&&saved.marked.length===questions.length?saved.marked:marked;
+       answers=saved.answers.map(v=>Number.isInteger(v)&&v>=0?v:null);if(Array.isArray(saved.answerModes)&&saved.answerModes.length===questions.length)answerModes=saved.answerModes.map(v=>v==='challenge'?'challenge':'choice');if(Array.isArray(saved.challengeTexts)&&saved.challengeTexts.length===questions.length)challengeTexts=saved.challengeTexts.map(v=>String(v||'').slice(0,500));if(Array.isArray(saved.retryWrong))retryWrong=saved.retryWrong.filter(v=>Number.isSafeInteger(v)&&v>=0&&v<questions.length);retryActive=saved.retryActive===true&&retryWrong.length>0;if(Array.isArray(saved.priorAnswers)&&saved.priorAnswers.length===questions.length)priorAnswers=saved.priorAnswers;if(Array.isArray(saved.priorModes)&&saved.priorModes.length===questions.length)priorModes=saved.priorModes;if(Array.isArray(saved.priorChallengeTexts)&&saved.priorChallengeTexts.length===questions.length)priorChallengeTexts=saved.priorChallengeTexts;marked=Array.isArray(saved.marked)&&saved.marked.length===questions.length?saved.marked:marked;
       if(Number.isFinite(Number(saved.left)))left=Math.max(0,Math.min(left,Number(saved.left)));
       if(Array.isArray(saved.optionOrder))questions.forEach((q,qi)=>{const order=saved.optionOrder[qi];if(Array.isArray(order))q.options.sort((a,b)=>order.indexOf(a.sourceIndex)-order.indexOf(b.sourceIndex))});
     }
   }catch{}
-  openModal(`<div class="section-head"><div><h3>${esc(e.title)}</h3><span class="small muted">${esc(e.subject)} • ${esc(e.grade)} • ${questions.length} سؤال</span></div><span id="examTimer" class="chip warn"></span></div><div id="examProgress" class="meter" style="margin:12px 0"><i></i></div><div id="examArea"></div>`);
-  function persist(){try{mkRuntimeSetItem(stateKey,JSON.stringify({answers,marked,left,optionOrder:questions.map(q=>q.options.map(o=>o.sourceIndex))}))}catch{}}
+   if(serverMode&&backendSession?.retry_pending&&Array.isArray(backendSession.review_answers)){
+     const reviewAnswers=backendSession.review_answers;
+     reviewAnswers.forEach((answer,index)=>{if(!answer||index>=questions.length)return;if(answer.type==='challenge'){answerModes[index]='challenge';challengeTexts[index]=String(answer.text||'');answers[index]=null;}else if(answer.type==='choice'&&Number.isInteger(answer.index)){answerModes[index]='choice';answers[index]=questions[index].options.findIndex(option=>option.sourceIndex===answer.index);}});
+     retryWrong=Array.isArray(backendSession.wrong_question_indexes)?backendSession.wrong_question_indexes.filter(value=>Number.isSafeInteger(value)&&value>=0&&value<questions.length):[];retryActive=retryWrong.length>0;priorAnswers=[...answers];priorModes=[...answerModes];priorChallengeTexts=[...challengeTexts];retryWrong.forEach(index=>{answers[index]=null;challengeTexts[index]='';});i=retryWrong[0]||0;
+   }
+   const activeQuestionIndexes=()=>retryActive?retryWrong:[...questions.keys()];
+   const isAnswered=index=>answerModes[index]==='challenge'?!!challengeTexts[index].trim():answers[index]!==null;
+   const challengeLimit=Math.max(0,Math.min(10,Number(e.challengeLimit??2)||0));
+  openModal(`<div class="section-head"><div><h3>${esc(e.title)}</h3><span class="small muted">${esc(e.subject)} • ${esc(e.grade)} • ${questions.length} سؤال</span></div><span id="examTimer" class="chip warn"></span></div>${serverMode?'<div class="notice warn">وقت الاختبار يستمر على الخادم. مغادرة التطبيق أو إخفاؤه قبل التسليم تنهي المحاولة وتسجلها دون درجة.</div>':''}<div id="examProgress" class="meter" style="margin:12px 0"><i></i></div><div id="examArea"></div>`);
+  let exitHandled=false;
+  const removeExitWatch=()=>{document.removeEventListener('visibilitychange',onVisibilityChange);window.removeEventListener('pagehide',onPageHide)};
+  const onVisibilityChange=()=>{if(document.visibilityState==='hidden')void forfeitOnExit()};
+  const onPageHide=()=>void forfeitOnExit();
+  async function forfeitOnExit(){
+    if(!serverMode||finished||submitting||exitHandled)return;
+    exitHandled=true;finished=true;clearInterval(window.__mkExamTimer);removeExitWatch();
+    try{mkRuntimeRemoveItem(stateKey)}catch{}
+    const area=document.getElementById('examArea');
+    try{
+      const result=await window.mkForfeitExamBackend(id);
+      db.examResults=db.examResults.filter(item=>!(String(item.exam)===String(id)&&String(item.student)===String(current.id)));
+      db.examResults.push({id:'examresult_'+String(result.result_id||''),exam:id,student:current.id,score:0,max:Number(result.max)||questions.reduce((sum,question)=>sum+question.points,0),percentage:0,date:String(result.date||new Date().toISOString().slice(0,10)),review:[],forfeited:true,serverAuthoritative:true});
+      save();
+      if(area&&document.visibilityState!=='hidden')area.innerHTML='<div class="notice danger"><h3>أُغلقت المحاولة دون تسليم</h3><p>غادرت التطبيق أثناء الاختبار، فسجل الخادم المحاولة دون درجة.</p></div><button class="btn primary" data-mk-click="closeModal();renderPage()">العودة</button>';
+    }catch(error){
+      if(area&&document.visibilityState!=='hidden')area.innerHTML=`<div class="notice warn"><h3>لم يكتمل تأكيد إنهاء الاختبار</h3><p>${esc(error?.message||'سيظل الوقت محسوبًا على الخادم ولن يمكن بدء محاولة جديدة بعد انتهائه.')}</p></div>`;
+    }
+  }
+  if(serverMode){document.addEventListener('visibilitychange',onVisibilityChange);window.addEventListener('pagehide',onPageHide)}
+   function persist(){try{mkRuntimeSetItem(stateKey,JSON.stringify({answers,answerModes,challengeTexts,marked,left,retryWrong,retryActive,priorAnswers,priorModes,priorChallengeTexts,optionOrder:questions.map(q=>q.options.map(o=>o.sourceIndex))}))}catch{}}
   function renderQ(){
     if(finished)return;
-    const q=questions[i],answered=answers[i]!==null,answeredCount=answers.filter(value=>value!==null).length;
-    const nav=questions.map((_,n)=>`<button class="btn ${n===i?'primary':''}" style="min-width:42px" data-mk-click="window.__examGo(${n})">${n+1}${marked[n]?' ⭐':''}${answers[n]!==null?' ✓':''}</button>`).join('');
-    const gameHud=gameMode?`<section class="mk-game-hud mk-game-${gameMode.key}" aria-label="${esc(gameMode.title)}"><div class="mk-game-heading"><span class="mk-game-icon" aria-hidden="true">${gameMode.icon}</span><div><b>${esc(gameMode.title)}</b><small>${esc(gameMode.label)} · ${answeredCount} من ${questions.length} إجابة</small></div><span class="mk-game-badge">${gameMode.key==='primary'?'⭐ '+answeredCount:gameMode.key==='preparatory'?'المستوى '+(Math.floor(i/3)+1):'⚡ تحدي الوقت'}</span></div>${gameMode.key==='primary'?`<div class="mk-game-map" role="group" aria-label="محطات المغامرة">${questions.map((_,n)=>`<button class="mk-game-node ${n===i?'current':''} ${answers[n]!==null?'complete':''} ${marked[n]?'marked':''}" data-mk-click="window.__examGo(${n})" aria-label="المحطة ${n+1}${answers[n]!==null?' مكتملة':''}" aria-current="${n===i?'step':'false'}">${answers[n]!==null?'★':n+1}</button>`).join('')}</div><p class="mk-game-caption">أجب عن المحطات لتجمع النجوم وتصل إلى نهاية الرحلة.</p>`:gameMode.key==='preparatory'?`<div class="mk-game-levels" role="group" aria-label="مستويات المهمة">${Array.from({length:Math.ceil(questions.length/3)},(_,level)=>{const start=level*3,end=Math.min(start+3,questions.length),done=answers.slice(start,end).filter(value=>value!==null).length===end-start;return `<button class="mk-game-level ${Math.floor(i/3)===level?'current':''} ${done?'complete':''}" data-mk-click="window.__examGo(${start})"><b>${done?'✓':'◈'} المستوى ${level+1}</b><small>${done?'مكتمل':`${Math.max(0,done?0:answers.slice(start,end).filter(value=>value!==null).length)} من ${end-start} أسئلة`}</small></button>`}).join('')}</div><p class="mk-game-caption">كل ثلاثة أسئلة تفتح مستوى جديدًا. يمكنك الرجوع لأي مستوى للمراجعة.</p>`:`<div class="mk-game-challenge"><div><small>الوقت المتبقي</small><b id="mkGameTime">ابدأ التحدي</b></div><div><small>الإجابات المنجزة</small><b>${answeredCount} / ${questions.length}</b></div><div><small>التقدم</small><b>${Math.round(answeredCount/questions.length*100)}٪</b></div></div><p class="mk-game-caption">أكمل أكبر عدد ممكن من الأسئلة قبل انتهاء الوقت. تظهر نتيجتك بعد التسليم فقط.</p>`}<div class="mk-game-progress" role="progressbar" aria-label="تقدم اللعبة" aria-valuemin="0" aria-valuemax="${questions.length}" aria-valuenow="${answeredCount}"><i style="width:${Math.round(answeredCount/questions.length*100)}%"></i></div></section>`:'';
-    document.getElementById('examArea').innerHTML=`${gameHud}<div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap"><span class="chip">${gameMode?.key==='primary'?'المحطة':gameMode?.key==='preparatory'?'المستوى':'السؤال'} ${i+1} من ${questions.length}</span><span class="chip ${answered?'good':'warn'}">${answered?'تمت الإجابة':'لم تتم الإجابة'}</span></div><div class="quick-grid" style="margin:12px 0">${nav}</div><div class="assignment-q">${q.text?`<h4 style="white-space:pre-wrap">${esc(q.text)}</h4>`:''}${q.imageFileId?`<img class="assignment-question-img" data-mk-file-ref="${esc(q.imageFileId)}" alt="صورة السؤال ${i+1}">`:q.text?`<img class="assignment-question-img" src="${questionImage(q.text,i+1)}" alt="السؤال ${i+1}">`:''}<div class="list">${q.options.map((o,j)=>`<button class="mcq-option btn ${answers[i]===j?'primary':''}" style="text-align:right" data-mk-click="window.__examPick(${j})"><span class="option-letter">${String.fromCharCode(65+j)}</span><span>${esc(o.text)}</span></button>`).join('')}</div></div><div class="row" style="justify-content:space-between;margin-top:14px;gap:8px"><button class="btn" data-mk-click="window.__examMark()">${marked[i]?'إلغاء المراجعة':'⭐ مراجعة لاحقًا'}</button><div class="row" style="gap:8px"><button class="btn" data-mk-click="window.__examPrev()" ${i===0?'disabled':''}>السابق</button>${i===questions.length-1?'<button class="btn danger" data-mk-click="window.__examFinish()">إنهاء وتسليم</button>':'<button class="btn primary" data-mk-click="window.__examNext()">التالي</button>'}</div></div>`;
-    const pct=Math.round(questions.filter((_,n)=>answers[n]!==null).length/questions.length*100);
+    const q=questions[i],answered=isAnswered(i),active=activeQuestionIndexes(),answeredCount=active.filter(isAnswered).length,challengeCount=answerModes.filter(mode=>mode==="challenge").length;
+    const nav=active.map(n=>`<button class="btn ${n===i?'primary':''}" style="min-width:42px" data-mk-click="window.__examGo(${n})">${n+1}${marked[n]?' ⭐':''}${isAnswered(n)?' ✓':''}</button>`).join('');
+    const gameHud=retryActive?'<section class="mk-game-hud"><b>🔁 جولة تصحيح الأخطاء</b><p>أعد الإجابة عن الأسئلة غير الصحيحة فقط.</p></section>':gameMode?`<section class="mk-game-hud mk-game-${gameMode.key}" aria-label="${esc(gameMode.title)}"><div class="mk-game-heading"><span class="mk-game-icon" aria-hidden="true">${gameMode.icon}</span><div><b>${esc(gameMode.title)}</b><small>${esc(gameMode.label)} · ${answeredCount} من ${questions.length} إجابة</small></div><span class="mk-game-badge">${gameMode.key==='primary'?'⭐ '+answeredCount:gameMode.key==='preparatory'?'المستوى '+(Math.floor(i/3)+1):'⚡ تحدي الوقت'}</span></div>${gameMode.key==='primary'?`<div class="mk-game-map" role="group" aria-label="محطات المغامرة">${questions.map((_,n)=>`<button class="mk-game-node ${n===i?'current':''} ${answers[n]!==null?'complete':''} ${marked[n]?'marked':''}" data-mk-click="window.__examGo(${n})" aria-label="المحطة ${n+1}${answers[n]!==null?' مكتملة':''}" aria-current="${n===i?'step':'false'}">${answers[n]!==null?'★':n+1}</button>`).join('')}</div><p class="mk-game-caption">أجب عن المحطات لتجمع النجوم وتصل إلى نهاية الرحلة.</p>`:gameMode.key==='preparatory'?`<div class="mk-game-levels" role="group" aria-label="مستويات المهمة">${Array.from({length:Math.ceil(questions.length/3)},(_,level)=>{const start=level*3,end=Math.min(start+3,questions.length),done=answers.slice(start,end).filter(value=>value!==null).length===end-start;return `<button class="mk-game-level ${Math.floor(i/3)===level?'current':''} ${done?'complete':''}" data-mk-click="window.__examGo(${start})"><b>${done?'✓':'◈'} المستوى ${level+1}</b><small>${done?'مكتمل':`${Math.max(0,done?0:answers.slice(start,end).filter(value=>value!==null).length)} من ${end-start} أسئلة`}</small></button>`}).join('')}</div><p class="mk-game-caption">كل ثلاثة أسئلة تفتح مستوى جديدًا. يمكنك الرجوع لأي مستوى للمراجعة.</p>`:`<div class="mk-game-challenge"><div><small>الوقت المتبقي</small><b id="mkGameTime">ابدأ التحدي</b></div><div><small>الإجابات المنجزة</small><b>${answeredCount} / ${questions.length}</b></div><div><small>التقدم</small><b>${Math.round(answeredCount/questions.length*100)}٪</b></div></div><p class="mk-game-caption">أكمل أكبر عدد ممكن من الأسئلة قبل انتهاء الوقت. تظهر نتيجتك بعد التسليم فقط.</p>`}<div class="mk-game-progress" role="progressbar" aria-label="تقدم اللعبة" aria-valuemin="0" aria-valuemax="${questions.length}" aria-valuenow="${answeredCount}"><i style="width:${Math.round(answeredCount/questions.length*100)}%"></i></div></section>`:'';
+    const canChallenge=serverMode&&q.challengeEnabled&&challengeLimit>0&&(challengeCount<challengeLimit||answerModes[i]==="challenge");     const methodPicker=canChallenge?`<div class="mk-exam-answer-modes" role="group" aria-label="طريقة الإجابة"><button type="button" class="btn ${answerModes[i]==="choice"?"primary":""}" data-mk-click="window.__examSetMode('choice')">اختيار من متعدد</button><button type="button" class="btn ${answerModes[i]==="challenge"?"primary":""}" data-mk-click="window.__examSetMode('challenge')">تحدي بدون اختيارات ×2</button></div>`:"";     const previousAnswer=retryActive?`<div class="notice warn">إجابتك السابقة: <b>${esc(priorModes[i]==="challenge"?priorChallengeTexts[i]:(questions[i].base[(priorAnswers[i]??-1)>=0?questions[i].options[priorAnswers[i]]?.sourceIndex:-1]||"غير معروفة"))}</b></div>`:"";     const answerBody=answerModes[i]==="challenge"?`<div class="mk-exam-challenge-answer"><label for="mkExamChallengeAnswer">اكتب إجابتك بنفسك لتحصل على ضعف الدرجة عند الصحة</label><textarea id="mkExamChallengeAnswer" maxlength="500" rows="3" placeholder="اكتب إجابتك هنا" data-mk-input="window.__examTextAnswer(this.value)">${esc(challengeTexts[i])}</textarea><small>إجابة صحيحة = ضعف الدرجة • إجابة خاطئة = صفر لهذا السؤال</small></div>`:`<div class="list">${q.options.map((o,j)=>`<button class="mcq-option btn ${answers[i]===j?'primary':''}" style="text-align:right" data-mk-click="window.__examPick(${j})"><span class="option-letter">${String.fromCharCode(65+j)}</span><span>${esc(o.text)}</span></button>`).join('')}</div>`;     document.getElementById('examArea').innerHTML=`${gameHud}${retryActive?'<div class="notice info">أعد حل الأسئلة التي أخطأت فيها. النتيجة النهائية ستظهر بعد تسليم هذه الجولة.</div>':''}<div class="row" style="justify-content:space-between;gap:8px;flex-wrap:wrap"><span class="chip">${retryActive?'مراجعة السؤال':gameMode?.key==='primary'?'المحطة':gameMode?.key==='preparatory'?'المستوى':'السؤال'} ${i+1} من ${questions.length}</span><span class="chip ${answered?'good':'warn'}">${answered?'تمت الإجابة':'لم تتم الإجابة'}</span></div><div class="quick-grid" style="margin:12px 0">${nav}</div><div class="assignment-q">${q.text?`<h4 style="white-space:pre-wrap">${esc(q.text)}</h4>`:''}${q.imageFileId?`<img class="assignment-question-img" data-mk-file-ref="${esc(q.imageFileId)}" alt="صورة السؤال ${i+1}">`:q.text?`<img class="assignment-question-img" src="${questionImage(q.text,i+1)}" alt="السؤال ${i+1}">`:''}${previousAnswer}${methodPicker}${answerBody}</div><div class="row" style="justify-content:space-between;margin-top:14px;gap:8px"><button class="btn" data-mk-click="window.__examMark()">${marked[i]?'إلغاء المراجعة':'⭐ مراجعة لاحقًا'}</button><div class="row" style="gap:8px"><button class="btn" data-mk-click="window.__examPrev()" ${active.indexOf(i)===0?'disabled':''}>السابق</button>${active.indexOf(i)===active.length-1?'<button class="btn danger" data-mk-click="window.__examFinish()">إنهاء وتسليم</button>':'<button class="btn primary" data-mk-click="window.__examNext()">التالي</button>'}</div></div>`;
+    const pct=Math.round(active.filter(isAnswered).length/Math.max(1,active.length)*100);
     const progress=document.querySelector('#examProgress i');if(progress)progress.style.width=pct+'%';
   }
   function showTimer(){const value=`${Math.floor(left/60)}:${String(left%60).padStart(2,'0')}`,el=document.getElementById('examTimer'),gameTime=document.getElementById('mkGameTime');if(el)el.textContent=value;if(gameTime)gameTime.textContent=value}
-  function startTimer(){clearInterval(window.__mkExamTimer);showTimer();if(left<=0){void finish();return}window.__mkExamTimer=setInterval(()=>{if(finished||submitting)return;left=Math.max(0,left-1);persist();showTimer();if(left<=0){clearInterval(window.__mkExamTimer);void finish()}},1000)}
-  async function finish(){
+  function startTimer(){clearInterval(window.__mkExamTimer);showTimer();if(left<=0){void finish(true);return}window.__mkExamTimer=setInterval(()=>{if(finished||submitting)return;left=Math.max(0,left-1);persist();showTimer();if(left<=0){clearInterval(window.__mkExamTimer);void finish(true)}},1000)}
+  async function finish(timeExpired=false){
     if(finished||submitting)return;
+    if(!timeExpired&&activeQuestionIndexes().some(index=>!isAnswered(index))&&!confirm('هناك أسئلة لم تُجب عنها. هل تريد تسليم الاختبار الآن؟'))return;
     submitting=true;clearInterval(window.__mkExamTimer);
-    let score=0,max=questions.reduce((sum,q)=>sum+q.points,0),pct=0,resultDate=new Date().toISOString().slice(0,10),resultId=uid('er');
+    let score=0,max=questions.reduce((sum,q)=>sum+q.points,0),pct=0,resultDate=new Date().toISOString().slice(0,10),resultId=uid('er'),finalReview=[];
     if(serverMode){
-      const selected=questions.map((q,k)=>answers[k]===null?null:q.options[answers[k]]?.sourceIndex??null);
+      const selected=questions.map((q,k)=>answerModes[k]==='challenge'?{type:'challenge',text:challengeTexts[k]}:answers[k]===null?null:{type:'choice',index:q.options[answers[k]]?.sourceIndex});
       try{
         const result=await window.mkSubmitExamToBackend(id,selected);
+        if(result.status==='RETRY_REQUIRED'){
+          retryWrong=Array.isArray(result.wrong_question_indexes)?result.wrong_question_indexes.filter(value=>Number.isSafeInteger(value)&&value>=0&&value<questions.length):[];
+          if(!retryWrong.length)throw new Error('لم يرجع الخادم أسئلة المراجعة');
+          priorAnswers=[...answers];priorModes=[...answerModes];priorChallengeTexts=[...challengeTexts];retryActive=true;
+          retryWrong.forEach(index=>{answers[index]=null;challengeTexts[index]='';});i=retryWrong[0];left=Math.max(60,Number(result.remaining_seconds)||600);persist();submitting=false;renderQ();startTimer();toast(`باقي ${retryWrong.length} سؤالًا خاطئًا؛ أعد حلها الآن لتظهر نتيجتك.`);return;
+        }
+        finalReview=Array.isArray(result.review)?result.review:[];
         score=Number(result.score);max=Number(result.max);pct=Number(result.percentage);resultDate=String(result.date||resultDate);resultId='examresult_'+String(result.result_id||'');
         if(!Number.isFinite(score)||!Number.isFinite(max)||max<=0||!Number.isFinite(pct))throw new Error('استجابة نتيجة الاختبار غير صالحة');
       }catch(error){
@@ -432,11 +469,11 @@ async function startExam(id){
     }else{
       score=questions.reduce((sum,q,k)=>sum+(answers[k]!==null&&q.options[answers[k]]?.correct?q.points:0),0);pct=max?Math.round(score/max*100):0;
     }
-    submitting=false;finished=true;clearInterval(window.__mkExamTimer);
+    submitting=false;finished=true;clearInterval(window.__mkExamTimer);removeExitWatch();
     const oldResult=db.examResults.find(x=>x.exam===id&&x.student===current.id);
     if(!oldResult||serverMode){
       db.examResults=db.examResults.filter(x=>!(String(x.exam)===String(id)&&String(x.student)===String(current.id)));
-      db.examResults.push({id:resultId,exam:id,student:current.id,score,max,date:resultDate,answers:serverMode?[]:[...answers],percentage:pct,serverAuthoritative:serverMode});
+      db.examResults.push({id:resultId,exam:id,student:current.id,score,max,date:resultDate,answers:serverMode?[]:[...answers],percentage:pct,review:finalReview,forfeited:false,serverAuthoritative:serverMode});
       db.grades=db.grades.filter(g=>!(String(g.student)===String(current.id)&&String(g.type)==='اختبار'&&String(g.examId||g.exam)===String(id)));
       db.grades.push({id:serverMode?'examgrade_'+String(resultId).replace(/^examresult_/, ''):uid('g'),student:current.id,teacher:e.teacher,subject:e.subject,grade:e.grade,type:'اختبار',examId:id,title:e.title,score,max,comment:`نتيجة ${serverMode?'محفوظة على الخادم':'تلقائية'}: ${score}/${max}`,date:resultDate});
       if(e.platformPrivate && serverMode && typeof window.mkAddPoints === 'function') {
@@ -446,15 +483,18 @@ async function startExam(id){
     try{mkRuntimeRemoveItem(stateKey)}catch{}
     const passPercent=Number(e.passPercent??50),passed=pct>=passPercent;
     const gameReward=gameMode?`<div class="notice good"><h3>${gameMode.icon} اكتملت ${gameMode.title}</h3><p>نجوم الأداء: <b>${'⭐'.repeat(Math.max(0,Math.min(5,Math.round(pct/20)))||0)||'—'}</b></p></div>`:'';
-    document.getElementById('examArea').innerHTML=`${gameReward}<div class="notice ${passed?'good':'warn'}"><h3>انتهى الاختبار ${passed?'🎉':'📚'}</h3><p>نتيجتك: <b>${score}/${max}</b></p><p>النسبة: <b>${pct}%</b> — درجة النجاح ${passPercent}%</p><p>${passed?'ناجح في الاختبار. أحسنت!':'تحتاج إلى مراجعة المادة والمحاولة القادمة.'}</p>${serverMode?'<p class="small">تم حفظ النتيجة على الخادم.</p>':''}</div><button class="btn primary" data-mk-click="closeModal();renderPage()">العودة</button>`;
+    const reviewHtml=finalReview.length?`<section class="mk-exam-review"><h3>مراجعة الإجابات</h3>${finalReview.map(item=>`<article class="mk-exam-review-item ${item.correct?'correct':'incorrect'}"><b>السؤال ${Number(item.index)+1}: ${esc(item.question||'')}</b><p>${item.retried?'كان ضمن الأسئلة المعادة • ':''}${item.correct?'أجبت عنه صحيحًا':'إجابتك النهائية'}: ${esc(item.answer||'—')}</p><p><b>الإجابة الصحيحة:</b> ${esc(item.correctAnswer||'—')}</p></article>`).join('')}</section>`:'';
+    document.getElementById('examArea').innerHTML=`${gameReward}<div class="notice ${passed?'good':'warn'}"><h3>انتهى الاختبار ${passed?'🎉':'📚'}</h3><p>نتيجتك: <b>${score}/${max}</b></p><p>النسبة: <b>${pct}%</b> — درجة النجاح ${passPercent}%</p><p>${passed?'ناجح في الاختبار. أحسنت!':'تحتاج إلى مراجعة المادة والمحاولة القادمة.'}</p>${serverMode?'<p class="small">تم حفظ النتيجة على الخادم.</p>':''}</div>${reviewHtml}<button class="btn primary" data-mk-click="closeModal();renderPage()">العودة</button>`;
     save();
   }
-  window.__examPick=j=>{if(finished||submitting)return;answers[i]=j;persist();renderQ()};
-  window.__examGo=n=>{if(finished||submitting||n<0||n>=questions.length)return;i=n;renderQ()};
-  window.__examNext=()=>{if(i<questions.length-1){i++;renderQ()}};
-  window.__examPrev=()=>{if(i>0){i--;renderQ()}};
+   window.__examPick=j=>{if(finished||submitting||answerModes[i]==='challenge')return;answers[i]=j;persist();renderQ()};
+   window.__examSetMode=mode=>{if(finished||submitting||!['choice','challenge'].includes(mode))return;const otherChallenges=answerModes.filter((value,index)=>index!==i&&value==='challenge').length;if(mode==='challenge'&&(!serverMode||!questions[i].challengeEnabled||otherChallenges>=challengeLimit))return toast('هذا السؤال غير مؤهل للتحدي أو وصلت إلى الحد المسموح');answerModes[i]=mode;if(mode==='choice')challengeTexts[i]='';else answers[i]=null;persist();renderQ()};
+   window.__examTextAnswer=value=>{if(finished||submitting||answerModes[i]!=='challenge')return;challengeTexts[i]=String(value||'').slice(0,500);persist();const badge=document.querySelector('#examArea .chip.good,#examArea .chip.warn');if(badge){const done=isAnswered(i);badge.textContent=done?'تمت الإجابة':'لم تتم الإجابة';badge.className='chip '+(done?'good':'warn')}};
+   window.__examGo=n=>{const active=activeQuestionIndexes();if(finished||submitting||!active.includes(n))return;i=n;renderQ()};
+   window.__examNext=()=>{const active=activeQuestionIndexes(),index=active.indexOf(i);if(index>=0&&index<active.length-1){i=active[index+1];renderQ()}};
+   window.__examPrev=()=>{const active=activeQuestionIndexes(),index=active.indexOf(i);if(index>0){i=active[index-1];renderQ()}};
   window.__examMark=()=>{marked[i]=!marked[i];persist();renderQ()};
-  window.__examFinish=()=>{if(answers.some(x=>x===null)&&!confirm('هناك أسئلة لم تُجب عنها. هل تريد تسليم الاختبار الآن؟'))return;void finish()};
+   window.__examFinish=()=>void finish(false);
   renderQ();startTimer();
 }
 function aiConfig(){return {key:'',model:'server-side'}}
@@ -1169,7 +1209,6 @@ function resetData(){if(current?.role!=='admin')return forbidden();if(!confirm('
 function safeSchoolResourceUrl(item){const raw=String(item?.url||item?.link||item?.href||'').trim();if(!raw)return '';try{const u=new URL(raw,location.href);return ['http:','https:'].includes(u.protocol)?u.href:''}catch{return ''}}
 function openLesson(id){const item=db.lessonLinks.find(x=>String(x.id)===String(id));if(!item)return toast('الدرس غير موجود');if(current?.role==='student'&&item.grade!==me()?.grade)return forbidden();if(current?.role==='parent'&&!visibleStudents().some(s=>s.grade===item.grade))return forbidden();const href=safeSchoolResourceUrl(item);openModal('<h3>'+esc(item.title||'الدرس')+'</h3><p class="muted">'+esc(item.subject||'')+' • '+esc(item.grade||'')+'</p><div class="notice">'+esc(item.description||item.content||item.body||'لا يوجد وصف إضافي لهذا الدرس.')+'</div>'+(href?'<p><a class="btn primary" href="'+esc(href)+'" target="_blank" rel="noopener noreferrer">فتح الدرس</a></p>':''));}
 function openLibraryResource(id){const item=db.library.find(x=>String(x.id)===String(id));if(!item)return toast('المورد غير موجود');if(current?.role==='student'&&item.grade!==me()?.grade)return forbidden();if(current?.role==='parent'&&!visibleStudents().some(s=>s.grade===item.grade))return forbidden();const href=safeSchoolResourceUrl(item);openModal('<h3>'+esc(item.title||'المورد التعليمي')+'</h3><p class="muted">'+esc(item.subject||'')+' • '+esc(item.grade||'')+' • '+esc(item.type||'')+'</p><div class="notice">'+esc(item.description||item.summary||item.content||'المورد متاح من خلال الرابط المرفق.')+'</div>'+(href?'<p><a class="btn primary" href="'+esc(href)+'" target="_blank" rel="noopener noreferrer">فتح المورد</a></p>':''));}
-
 
 
 

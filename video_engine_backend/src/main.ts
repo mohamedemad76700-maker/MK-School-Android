@@ -13,7 +13,7 @@ import { createReadStream } from 'node:fs';
 import { mkdir, readFile, readdir, realpath, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { normalizeExamQuestion, gradeExamAnswers, isCourseExamEnrolled } from './exam-utils.js';
+import { normalizeExamQuestion, normalizeExamChallengeLimit, publicExamQuestionForStudent, gradeExamAnswers, normalizeSubmittedExamAnswers, incorrectExamQuestionIndexes, validateExamRetryAnswers, buildExamAnswerReview, isCourseExamEnrolled } from './exam-utils.js';
 import { nextVideoViewCount } from './video-view-utils.js';
 import { exceedsAiDailyLimit, filterAiCoursesForEnrolledStudents, minimizeAiContext } from './ai-context-utils.js';
 import { applyPlatformStateChanges } from './platform-state-utils.js';
@@ -45,6 +45,9 @@ const CORS_ALLOWED_ORIGINS = new Set([
   ...(process.env.FRONTEND_ORIGIN ? [] : [`http://127.0.0.1:${PORT}`, `https://localhost:${PORT}`, `https://127.0.0.1:${PORT}`]),
 ]);
 const MAX_VIEWS = 3;
+// HLS may request segments long after playback starts; each token is bound to one video,
+// student, and active device session, so long lessons do not fail at the old 15-minute mark.
+const MEDIA_TOKEN_TTL_SECONDS = 4 * 60 * 60;
 const MAX_UPLOAD = 1024 * 1024 * 1024;
 const ALLOWED_ROLES = new Set(['student', 'admin', 'parent']);
 
@@ -392,21 +395,8 @@ function filterState(raw: any, claims: Claims, parentIds: string[] | null = null
         delete copy.enrolledAtByStudent;
       }
       if (key === 'exams' && (claims.role === 'student' || claims.role === 'parent') && Array.isArray(copy.questions)) {
-        // Correct-answer keys must remain server-side, including nested option flags and legacy tuples.
-        const stripAnswerMaterial = (value: any): any => {
-          if (Array.isArray(value)) return value.map(stripAnswerMaterial);
-          if (!value || typeof value !== 'object') return value;
-          const clean: Record<string, unknown> = {};
-          for (const [field, fieldValue] of Object.entries(value)) {
-            const normalized = field.toLowerCase().replace(/[^a-z0-9]/g, '');
-            if (normalized.includes('answer') || normalized.includes('correct') || normalized.includes('solution') || normalized.includes('explanation')) continue;
-            clean[field] = stripAnswerMaterial(fieldValue);
-          }
-          return clean;
-        };
-        copy.questions = copy.questions.map((question: any) => Array.isArray(question)
-          ? [question[0], stripAnswerMaterial(question[1])]
-          : stripAnswerMaterial(question));
+        // Correct answers and accepted challenge phrases must remain server-side.
+        copy.questions = copy.questions.map(publicExamQuestionForStudent);
       }
       if (key === 'assignments' && (claims.role === 'student' || claims.role === 'parent')) {
         const eligibleStudentIds = claims.role === 'student' ? [id] : linkedIds;
@@ -425,6 +415,10 @@ function filterState(raw: any, claims: Claims, parentIds: string[] | null = null
       return copy;
     });
   }
+  // Parent accounts are for progress, grades, attendance, and school communications.
+  // Course catalog/enrollment data is reserved for student and administrator sessions.
+  if (claims.role === 'parent') state.courses = [];
+  if (claims.role === 'parent') state.courseProgress = {};
   if (Array.isArray(state.notifications)) state.notifications = state.notifications.filter((x: any) => String(x?.to || '') === id || String(x?.to || '') === 'all');
   if (Array.isArray(state.messages)) state.messages = state.messages.filter((x: any) => String(x?.to || '') === id || String(x?.from || '') === id);
   if (Array.isArray(state.complaints)) state.complaints = state.complaints.filter((x: any) => claims.role === 'teacher' ? belongsToTeacherScope(x) : [x?.studentId,x?.student,x?.from,x?.userId].some(v => v != null && (String(v) === id || linkedIds.includes(String(v)))));
@@ -1023,15 +1017,15 @@ async function hydrateExamSubmissions(stateInput: any, claims: Claims, parentIds
   const state = stateInput && typeof stateInput === 'object' && !Array.isArray(stateInput) ? stateInput : {};
   let result;
   if (claims.role === 'admin') {
-    result = await pool.query('SELECT submission_id,student_id,exam_id,teacher_id,grade,subject,title,score,max_score,percentage,submitted_at FROM exam_submissions ORDER BY submitted_at DESC LIMIT 10000');
+    result = await pool.query('SELECT submission_id,student_id,exam_id,teacher_id,grade,subject,title,score,max_score,percentage,review_data,forfeited,submitted_at FROM exam_submissions ORDER BY submitted_at DESC LIMIT 10000');
   } else if (claims.role === 'student') {
-    result = await pool.query('SELECT submission_id,student_id,exam_id,teacher_id,grade,subject,title,score,max_score,percentage,submitted_at FROM exam_submissions WHERE student_id=$1 ORDER BY submitted_at DESC LIMIT 1000', [claims.sub]);
+    result = await pool.query('SELECT submission_id,student_id,exam_id,teacher_id,grade,subject,title,score,max_score,percentage,review_data,forfeited,submitted_at FROM exam_submissions WHERE student_id=$1 ORDER BY submitted_at DESC LIMIT 1000', [claims.sub]);
   } else if (claims.role === 'parent') {
     result = parentIds?.length
-      ? await pool.query('SELECT submission_id,student_id,exam_id,teacher_id,grade,subject,title,score,max_score,percentage,submitted_at FROM exam_submissions WHERE student_id=ANY($1::varchar[]) ORDER BY submitted_at DESC LIMIT 5000', [parentIds])
+      ? await pool.query('SELECT submission_id,student_id,exam_id,teacher_id,grade,subject,title,score,max_score,percentage,review_data,forfeited,submitted_at FROM exam_submissions WHERE student_id=ANY($1::varchar[]) ORDER BY submitted_at DESC LIMIT 5000', [parentIds])
       : { rows: [] } as any;
   } else if (claims.role === 'teacher') {
-    result = await pool.query('SELECT submission_id,student_id,exam_id,teacher_id,grade,subject,title,score,max_score,percentage,submitted_at FROM exam_submissions WHERE teacher_id=$1 ORDER BY submitted_at DESC LIMIT 5000', [claims.sub]);
+    result = await pool.query('SELECT submission_id,student_id,exam_id,teacher_id,grade,subject,title,score,max_score,percentage,review_data,forfeited,submitted_at FROM exam_submissions WHERE teacher_id=$1 ORDER BY submitted_at DESC LIMIT 5000', [claims.sub]);
   } else {
     result = { rows: [] } as any;
   }
@@ -1048,7 +1042,7 @@ async function hydrateExamSubmissions(stateInput: any, claims: Claims, parentIds
     const base = { exam: examId, examId, student: studentId, teacher: String(row.teacher_id || ''), grade: String(row.grade || ''), subject: String(row.subject || ''), title: String(row.title || ''), score, max, percentage, date };
     const resultId = `examresult_${submissionId}`;
     const gradeId = `examgrade_${submissionId}`;
-    const examResult = { id: resultId, ...base };
+    const examResult = { id: resultId, ...base, review: Array.isArray(row.review_data) ? row.review_data : [], forfeited: row.forfeited === true };
     const grade = { id: gradeId, ...base, type: 'اختبار', comment: `نتيجة محفوظة على الخادم: ${score}/${max}` };
     state.examResults = state.examResults.filter((item: any) => String(item?.id) !== resultId && !(String(item?.exam ?? item?.examId) === examId && String(item?.student ?? item?.studentId) === studentId));
     state.grades = state.grades.filter((item: any) => String(item?.id) !== gradeId && !(String(item?.type) === 'اختبار' && String(item?.examId ?? item?.exam) === examId && String(item?.student ?? item?.studentId) === studentId));
@@ -1068,9 +1062,12 @@ app.get('/api/v1/platform/state', async (req, res, next) => {
     const withSubmissions = await hydrateExamSubmissions(hydrated, claims, parentIds);
     if (claims.role === 'student' || claims.role === 'parent') {
       const visibleStudentIds = claims.role === 'student' ? [claims.sub] : (parentIds || []);
-      const watched = visibleStudentIds.length
-        ? await pool.query('SELECT course_id,student_id,lesson_index FROM course_lesson_watch_progress WHERE completed_at IS NOT NULL AND student_id=ANY($1::varchar[]) ORDER BY course_id,student_id,lesson_index', [visibleStudentIds])
-        : { rows: [] as any[] };
+      const [watched, pointBalances] = visibleStudentIds.length ? await Promise.all([
+        pool.query('SELECT course_id,student_id,lesson_index FROM course_lesson_watch_progress WHERE completed_at IS NOT NULL AND student_id=ANY($1::varchar[]) ORDER BY course_id,student_id,lesson_index', [visibleStudentIds]),
+        pool.query('SELECT student_id,balance FROM platform_points WHERE student_id=ANY($1::varchar[])', [visibleStudentIds]),
+      ]) : [{ rows: [] as any[] }, { rows: [] as any[] }];
+      withSubmissions.platformPoints = withSubmissions.platformPoints && typeof withSubmissions.platformPoints === 'object' ? withSubmissions.platformPoints : {};
+      for (const row of pointBalances.rows) withSubmissions.platformPoints[String(row.student_id)] = Number(row.balance || 0);
       withSubmissions.courseProgress = withSubmissions.courseProgress && typeof withSubmissions.courseProgress === 'object' ? withSubmissions.courseProgress : {};
       for (const row of watched.rows) {
         const key = `${String(row.course_id)}::${String(row.student_id)}`;
@@ -1149,13 +1146,19 @@ app.post('/api/v1/platform/state', async (req, res, next) => {
       const oldIds = new Set(oldSubmissions.map((submission: any) => String(submission?.id ?? '')));
       const newSubmissions = candidate.submissions.filter((submission: any) => submission && !oldIds.has(String(submission.id ?? '')));
       const accepted: any[] = [];
+      const replacedAssignmentIds = new Set<string>();
+      const processedAssignmentIds = new Set<string>();
       for (const submission of newSubmissions) {
         const submissionId = str(submission.id).trim();
         const assignmentId = str(submission.assignment ?? submission.assignmentId).trim();
         if (!/^[A-Za-z0-9_-]{8,128}$/.test(submissionId) || !assignmentId || String(submission.student ?? submission.studentId ?? '') !== claims.sub) fail(400, 'invalid assignment submission');
         const assignment = (Array.isArray(current.assignments) ? current.assignments : []).find((item: any) => String(item?.id) === assignmentId);
         if (!assignment || assignment.active === false || assignment.published === false || assignment.draft === true) fail(404, 'الواجب غير متاح للتسليم');
-        if (oldSubmissions.some((old: any) => String(old?.assignment ?? old?.assignmentId ?? '') === assignmentId && String(old?.student ?? old?.studentId ?? '') === claims.sub)) fail(409, 'سبق تسليم هذا الواجب؛ راجع التسليم الحالي');
+        if (processedAssignmentIds.has(assignmentId)) fail(409, 'لا يمكن إرسال أكثر من محاولة للواجب في الطلب نفسه');
+        processedAssignmentIds.add(assignmentId);
+        const priorSubmission = oldSubmissions.find((old: any) => String(old?.assignment ?? old?.assignmentId ?? '') === assignmentId && String(old?.student ?? old?.studentId ?? '') === claims.sub);
+        const retryPending = priorSubmission?.status === 'retry_required';
+        if (priorSubmission && !retryPending) fail(409, 'سبق تسليم هذا الواجب؛ راجع التسليم الحالي');
         const profileRow = await client.query('SELECT profile_data FROM video_user_profiles WHERE user_id=$1', [claims.sub]);
         const student = (Array.isArray(current.students) ? current.students : []).find((item: any) => String(item?.id) === claims.sub) || profileRow.rows[0]?.profile_data || {};
         if (str(assignment.grade) && str(assignment.grade) !== str(student.grade)) fail(403, 'الواجب غير مخصص لصفك');
@@ -1164,27 +1167,58 @@ app.post('/api/v1/platform/state', async (req, res, next) => {
         const questions = Array.isArray(assignment.questions) ? assignment.questions : [];
         if (!questions.length || answers.length !== questions.length || answers.length > 250) fail(400, 'عدد إجابات الواجب غير صالح');
         const multipleChoice = assignment.answerType === 'multiple_choice' || assignment.answerType === 'mcq';
-        let gradeResult: { score: number; max: number } | null = null;
+        let gradeResult: { score: number; max: number } | null = null, retryWrongIndexes: number[] = [], review: any[] = [];
         if (multipleChoice) {
-          let score = 0, max = 0;
+          let score = 0, max = 0; const wrong: number[] = [];
           for (let i = 0; i < questions.length; i++) {
             const question = questions[i], points = Math.max(1, Math.min(100, Number(question?.points || assignment.questionPoints || 1)));
             const correct = Number(question?.answerIndex ?? question?.answer);
-            const selected = Number(answers[i]);
+            const selected = answers[i];
             if (!Array.isArray(question?.options) || question.options.length < 2 || !Number.isInteger(correct) || correct < 0 || correct >= question.options.length || !Number.isInteger(selected) || selected < 0 || selected >= question.options.length) fail(400, 'إجابة اختيار من متعدد غير صالحة');
             max += points;
-            if (selected === correct) score += points;
+            if (selected === correct) score += points; else wrong.push(i);
+          }
+          if (retryPending) {
+            const firstWrong = Array.isArray(priorSubmission?.retryWrongIndexes) ? priorSubmission.retryWrongIndexes : [];
+            const mutable = new Set<number>();
+            for (const index of firstWrong) {
+              if (!Number.isSafeInteger(index) || index < 0 || index >= questions.length || mutable.has(index)) fail(409, 'حالة إعادة المحاولة غير صالحة');
+              mutable.add(index);
+            }
+            if (!mutable.size || !Array.isArray(priorSubmission?.answers) || priorSubmission.answers.length !== questions.length) fail(409, 'انتهت صلاحية إعادة محاولة الواجب');
+            for (let i = 0; i < questions.length; i++) if (!mutable.has(i) && Number(priorSubmission.answers[i]) !== answers[i]) fail(400, 'لا يمكن تغيير إجابة صحيحة سابقة');
+            retryWrongIndexes = [...mutable];
+            review = [...new Set([...retryWrongIndexes, ...wrong])].sort((a,b)=>a-b).map(index => ({
+              index, question: str(questions[index]?.text || `السؤال ${index + 1}`).slice(0,1000),
+              correct: !wrong.includes(index), retried: true, answer: str((Array.isArray(questions[index]?.options) ? questions[index].options : [])[answers[index]]).slice(0,2000),
+              correctAnswer: str((Array.isArray(questions[index]?.options) ? questions[index].options : [])[Number(questions[index]?.answerIndex ?? questions[index]?.answer)]).slice(0,2000),
+            }));
+          } else if (assignment.reviewWrongAnswers === true && wrong.length) {
+            accepted.push({
+              id: submissionId, assignment: assignmentId, student: claims.sub,
+              text: str(submission.text).slice(0, 100000), answers: answers.map(Number),
+              submittedAt: new Date().toISOString(), status: 'retry_required', retryWrongIndexes: wrong,
+              max, feedback: 'أعد حل الأسئلة المحددة لإظهار النتيجة النهائية.',
+            });
+            continue;
           }
           gradeResult = { score, max };
+          if (!retryPending) review = wrong.map(index => ({
+            index, question: str(questions[index]?.text || `السؤال ${index + 1}`).slice(0,1000), correct: false, retried: false,
+            answer: str((Array.isArray(questions[index]?.options) ? questions[index].options : [])[answers[index]]).slice(0,2000),
+            correctAnswer: str((Array.isArray(questions[index]?.options) ? questions[index].options : [])[Number(questions[index]?.answerIndex ?? questions[index]?.answer)]).slice(0,2000),
+          }));
         } else if (answers.some((answer: any) => typeof answer !== 'string' || answer.trim().length < 1 || answer.length > 20000)) fail(400, 'اكتب إجابة نصية صالحة لكل سؤال');
         accepted.push({
           id: submissionId, assignment: assignmentId, student: claims.sub,
           text: str(submission.text).slice(0, 100000), answers,
           submittedAt: new Date().toISOString(), status: gradeResult ? 'graded' : 'submitted',
-          ...(gradeResult ? { score: gradeResult.score, max: gradeResult.max, feedback: 'تم التصحيح تلقائيًا' } : {}),
+          ...(gradeResult ? { score: gradeResult.score, max: gradeResult.max, feedback: 'تم التصحيح تلقائيًا', review } : {}),
+          ...(retryWrongIndexes.length ? { reviewWrongIndexes: retryWrongIndexes, firstAnswers: priorSubmission?.answers } : {}),
         });
+        if (retryPending) replacedAssignmentIds.add(assignmentId);
       }
-      candidate.submissions = [...oldSubmissions, ...accepted];
+      candidate.submissions = [...oldSubmissions.filter((old: any) => !replacedAssignmentIds.has(String(old?.assignment ?? old?.assignmentId ?? ''))), ...accepted];
     }
     if (claims.role === 'parent') {
       const linked = (await client.query('SELECT student_id FROM parent_student_links WHERE parent_id=$1 AND active=TRUE ORDER BY student_id', [claims.sub])).rows.map(r => String(r.student_id));
@@ -1201,7 +1235,7 @@ app.post('/api/v1/platform/state', async (req, res, next) => {
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); next(e); } finally { client.release(); }
 });
 
-async function loadAssignedExam(client: PoolClient, studentId: string, examId: string): Promise<{ exam: any; examGrade: string; teacherId: string; questions: ReturnType<typeof normalizeExamQuestion>[] }> {
+async function loadAssignedExam(client: PoolClient, studentId: string, examId: string): Promise<{ exam: any; examGrade: string; teacherId: string; questions: ReturnType<typeof normalizeExamQuestion>[]; challengeLimit: number }> {
   const state = await readPlatformState(client);
   const exam = Array.isArray(state.exams) ? state.exams.find((item: any) => String(item?.id) === examId) : null;
   if (!exam) fail(404, 'الاختبار غير موجود على الخادم');
@@ -1228,7 +1262,10 @@ async function loadAssignedExam(client: PoolClient, studentId: string, examId: s
     try { return normalizeExamQuestion(question, Number(exam.questionPoints || 1)); }
     catch { return fail(409, 'يوجد سؤال بإعدادات غير صالحة؛ اطلب من إدارة المنصة مراجعة الاختبار'); }
   });
-  return { exam, examGrade, teacherId, questions };
+  let challengeLimit: number;
+  try { challengeLimit = normalizeExamChallengeLimit(exam.challengeLimit); }
+  catch { return fail(409, 'إعدادات تحدي مضاعفة النقاط غير صالحة؛ اطلب من إدارة المنصة مراجعة الاختبار'); }
+  return { exam, examGrade, teacherId, questions, challengeLimit };
 }
 
 function examDate(value: unknown): string {
@@ -1255,13 +1292,46 @@ app.post('/api/v1/exams/start', async (req, res, next) => {
       "INSERT INTO exam_sessions(student_id,exam_id,started_at,expires_at) VALUES($1,$2,now(),now()+($3::int * interval '1 second')) ON CONFLICT(student_id,exam_id) DO NOTHING",
       [claims.sub, examId, seconds]
     );
-    const session = await client.query('SELECT started_at,expires_at,closed_at FROM exam_sessions WHERE student_id=$1 AND exam_id=$2 FOR UPDATE', [claims.sub, examId]);
+    const session = await client.query('SELECT started_at,expires_at,closed_at,retry_pending,retry_answers,retry_wrong_indexes FROM exam_sessions WHERE student_id=$1 AND exam_id=$2 FOR UPDATE', [claims.sub, examId]);
     const row = session.rows[0];
     const expires = row?.expires_at instanceof Date ? row.expires_at : new Date(row?.expires_at);
     const remainingSeconds = Math.max(0, Math.ceil((expires.getTime() - Date.now()) / 1000));
-    if (!row || row.closed_at || Date.now() - expires.getTime() > 120_000) fail(408, 'انتهى وقت الاختبار ولا يمكن بدء محاولة جديدة');
+    if (!row || row.closed_at || expires.getTime() <= Date.now()) fail(408, 'انتهى وقت الاختبار ولا يمكن استئنافه أو بدء محاولة جديدة');
     await client.query('COMMIT');
-    res.status(inserted.rowCount ? 201 : 200).json({ status: inserted.rowCount ? 'STARTED' : 'RESUMED', exam_id: examId, started_at: row.started_at, expires_at: expires.toISOString(), remaining_seconds: remainingSeconds });
+    res.status(inserted.rowCount ? 201 : 200).json({ status: row.retry_pending ? 'RETRY_REQUIRED' : inserted.rowCount ? 'STARTED' : 'RESUMED', exam_id: examId, started_at: row.started_at, expires_at: expires.toISOString(), remaining_seconds: remainingSeconds, ...(row.retry_pending ? { retry_pending: true, review_answers: row.retry_answers, wrong_question_indexes: row.retry_wrong_indexes } : {}) });
+  } catch (e) { await client.query('ROLLBACK').catch(() => {}); next(e); } finally { client.release(); }
+});
+
+app.post('/api/v1/exams/forfeit', async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const claims = bearer(req);
+    await requireDeviceSession(claims);
+    if (claims.role !== 'student') fail(403, 'إنهاء محاولة الاختبار متاح لحساب الطالب فقط');
+    const examId = str(req.body?.exam_id).trim();
+    if (!examId || examId.length > 255 || !/^[A-Za-z0-9_.:-]+$/.test(examId)) fail(400, 'معرّف الاختبار غير صالح');
+    await client.query('BEGIN');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))', [claims.sub, examId]);
+    const already = await client.query('SELECT submission_id,score,max_score,percentage,review_data,forfeited,submitted_at FROM exam_submissions WHERE student_id=$1 AND exam_id=$2', [claims.sub, examId]);
+    if (already.rowCount) {
+      const row = already.rows[0];
+      await client.query('COMMIT');
+      res.json({ status: row.forfeited ? 'FORFEITED' : 'ALREADY_SUBMITTED', result_id: String(row.submission_id), exam_id: examId, score: Number(row.score), max: Number(row.max_score), percentage: Number(row.percentage), date: examDate(row.submitted_at), forfeited: row.forfeited === true, review: Array.isArray(row.review_data) ? row.review_data : [] });
+      return;
+    }
+    const assigned = await loadAssignedExam(client, claims.sub, examId);
+    const session = await client.query('SELECT closed_at FROM exam_sessions WHERE student_id=$1 AND exam_id=$2 FOR UPDATE', [claims.sub, examId]);
+    if (!session.rowCount || session.rows[0].closed_at) fail(409, 'محاولة الاختبار غير نشطة أو سبق إغلاقها');
+    const max = assigned.questions.reduce((sum, question) => sum + question.points, 0);
+    const inserted = await client.query(
+      'INSERT INTO exam_submissions(student_id,exam_id,teacher_id,grade,subject,title,score,max_score,percentage,answers,review_data,forfeited) VALUES($1,$2,$3,$4,$5,$6,0,$7,0,$8::jsonb,\'[]\'::jsonb,TRUE) RETURNING submission_id,submitted_at',
+      [claims.sub, examId, assigned.teacherId || null, assigned.examGrade, str(assigned.exam.subject).slice(0,255), str(assigned.exam.title).slice(0,255), max, JSON.stringify(assigned.questions.map(() => null))]
+    );
+    await client.query('UPDATE exam_sessions SET closed_at=now(),retry_pending=FALSE WHERE student_id=$1 AND exam_id=$2', [claims.sub, examId]);
+    await client.query('COMMIT');
+    const row = inserted.rows[0];
+    await audit(claims.sub, 'exam_forfeited', `exam=${examId};reason=app_hidden`);
+    res.status(201).json({ status: 'FORFEITED', result_id: String(row.submission_id), exam_id: examId, score: 0, max, percentage: 0, date: examDate(row.submitted_at), forfeited: true, review: [] });
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); next(e); } finally { client.release(); }
 });
 
@@ -1278,25 +1348,44 @@ app.post('/api/v1/exams/submit', async (req, res, next) => {
     await client.query('BEGIN');
     await client.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))', [claims.sub, examId]);
     const assigned = await loadAssignedExam(client, claims.sub, examId);
-    const already = await client.query('SELECT submission_id,score,max_score,percentage,submitted_at FROM exam_submissions WHERE student_id=$1 AND exam_id=$2', [claims.sub, examId]);
+    const already = await client.query('SELECT submission_id,score,max_score,percentage,review_data,forfeited,submitted_at FROM exam_submissions WHERE student_id=$1 AND exam_id=$2', [claims.sub, examId]);
     if (already.rowCount) {
       const row = already.rows[0];
       await client.query('COMMIT');
-      res.json({ status: 'ALREADY_SUBMITTED', result_id: String(row.submission_id), exam_id: examId, score: Number(row.score), max: Number(row.max_score), percentage: Number(row.percentage), date: examDate(row.submitted_at) });
+      res.json({ status: 'ALREADY_SUBMITTED', result_id: String(row.submission_id), exam_id: examId, score: Number(row.score), max: Number(row.max_score), percentage: Number(row.percentage), date: examDate(row.submitted_at), forfeited: row.forfeited === true, review: Array.isArray(row.review_data) ? row.review_data : [] });
       return;
     }
-    const session = await client.query('SELECT started_at,expires_at,closed_at FROM exam_sessions WHERE student_id=$1 AND exam_id=$2 FOR UPDATE', [claims.sub, examId]);
+    const session = await client.query('SELECT started_at,expires_at,closed_at,retry_pending,retry_answers,retry_wrong_indexes FROM exam_sessions WHERE student_id=$1 AND exam_id=$2 FOR UPDATE', [claims.sub, examId]);
     if (!session.rowCount) fail(409, 'ابدأ الاختبار من زر البدء قبل التسليم');
     const sessionRow = session.rows[0];
     if (sessionRow.closed_at) fail(409, 'محاولة الاختبار مغلقة');
     const expiry = sessionRow.expires_at instanceof Date ? sessionRow.expires_at : new Date(sessionRow.expires_at);
-    if (Date.now() - expiry.getTime() > 120_000) fail(408, 'انتهى وقت الاختبار؛ لم يُقبل التسليم المتأخر');
-    const graded = (() => { try { return gradeExamAnswers(assigned.questions, submittedAnswers); } catch { return fail(400, 'عدد الإجابات أو أحد الاختيارات غير صالح'); } })();
+    if (Date.now() - expiry.getTime() > 15_000) fail(408, 'انتهى وقت الاختبار؛ لم يُقبل التسليم المتأخر');
+    let acceptedAnswers;
+    try {
+      acceptedAnswers = sessionRow.retry_pending
+        ? validateExamRetryAnswers(assigned.questions, sessionRow.retry_answers, submittedAnswers, sessionRow.retry_wrong_indexes, assigned.challengeLimit)
+        : normalizeSubmittedExamAnswers(assigned.questions, submittedAnswers, assigned.challengeLimit);
+    } catch {
+      fail(400, 'عدد الإجابات أو اختيار التحدي أو إحدى الإجابات غير صالح');
+    }
+    const graded = gradeExamAnswers(assigned.questions, acceptedAnswers, assigned.challengeLimit);
+    const wrongIndexes = incorrectExamQuestionIndexes(assigned.questions, acceptedAnswers, assigned.challengeLimit);
+    if (!sessionRow.retry_pending && assigned.exam.reviewWrongAnswers === true && wrongIndexes.length) {
+      await client.query(
+        "UPDATE exam_sessions SET retry_pending=TRUE,retry_answers=$3::jsonb,retry_wrong_indexes=$4::jsonb,expires_at=GREATEST(expires_at,now()+interval '10 minutes') WHERE student_id=$1 AND exam_id=$2",
+        [claims.sub, examId, JSON.stringify(acceptedAnswers), JSON.stringify(wrongIndexes)]
+      );
+      await client.query('COMMIT');
+      res.json({ status: 'RETRY_REQUIRED', exam_id: examId, wrong_question_indexes: wrongIndexes });
+      return;
+    }
+    const review = buildExamAnswerReview(assigned.questions, acceptedAnswers, sessionRow.retry_pending ? sessionRow.retry_wrong_indexes : [], assigned.challengeLimit);
     const inserted = await client.query(
-      'INSERT INTO exam_submissions(student_id,exam_id,teacher_id,grade,subject,title,score,max_score,percentage,answers) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb) RETURNING submission_id,submitted_at',
-      [claims.sub, examId, assigned.teacherId || null, assigned.examGrade, str(assigned.exam.subject).slice(0,255), str(assigned.exam.title).slice(0,255), graded.score, graded.max, graded.percentage, JSON.stringify(graded.answers)]
+      'INSERT INTO exam_submissions(student_id,exam_id,teacher_id,grade,subject,title,score,max_score,percentage,answers,review_data,forfeited) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11::jsonb,FALSE) RETURNING submission_id,submitted_at',
+      [claims.sub, examId, assigned.teacherId || null, assigned.examGrade, str(assigned.exam.subject).slice(0,255), str(assigned.exam.title).slice(0,255), graded.score, graded.max, graded.percentage, JSON.stringify(graded.answers), JSON.stringify(review)]
     );
-    await client.query('UPDATE exam_sessions SET closed_at=now() WHERE student_id=$1 AND exam_id=$2', [claims.sub, examId]);
+    await client.query('UPDATE exam_sessions SET closed_at=now(),retry_pending=FALSE WHERE student_id=$1 AND exam_id=$2', [claims.sub, examId]);
     const parentLinks = await client.query('SELECT parent_id FROM parent_student_links WHERE student_id=$1 AND active=TRUE ORDER BY parent_id', [claims.sub]);
     if (parentLinks.rowCount) {
       await client.query("INSERT INTO platform_state(id,state,updated_at,revision,updated_by) VALUES(1,'{}'::jsonb,now(),0,$1) ON CONFLICT(id) DO NOTHING", [claims.sub]);
@@ -1319,7 +1408,7 @@ app.post('/api/v1/exams/submit', async (req, res, next) => {
     await client.query('COMMIT');
     await audit(claims.sub, 'exam_submitted', `exam=${examId};score=${graded.score}/${graded.max}`);
     const row = inserted.rows[0];
-    res.status(201).json({ status: 'SUBMITTED', result_id: String(row.submission_id), exam_id: examId, score: graded.score, max: graded.max, percentage: graded.percentage, date: examDate(row.submitted_at), title: str(assigned.exam.title), subject: str(assigned.exam.subject), grade: assigned.examGrade, teacher: assigned.teacherId });
+    res.status(201).json({ status: 'SUBMITTED', result_id: String(row.submission_id), exam_id: examId, score: graded.score, max: graded.max, percentage: graded.percentage, date: examDate(row.submitted_at), title: str(assigned.exam.title), subject: str(assigned.exam.subject), grade: assigned.examGrade, teacher: assigned.teacherId, review });
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); next(e); } finally { client.release(); }
 });
 
@@ -1450,6 +1539,7 @@ app.post('/api/v1/platform/courses/complete-lesson', async (req, res, next) => {
       const watch = (await client.query('SELECT watched_seconds,duration_seconds,completed_at FROM course_lesson_watch_progress WHERE course_id=$1 AND student_id=$2 AND lesson_index=$3 FOR SHARE', [courseId, claims.sub, lessonIndex])).rows[0];
       if (!watch?.completed_at || !watchedEnough(watch.watched_seconds, watch.duration_seconds)) fail(403, 'شاهد الفيديو حتى نهايته قبل تسجيل الدرس كمكتمل');
     }
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))', [claims.sub, courseId]);
     await client.query('INSERT INTO course_lesson_completions(course_id,student_id,lesson_index) VALUES($1,$2,$3) ON CONFLICT DO NOTHING', [courseId, claims.sub, lessonIndex]);
     const completed = await client.query('SELECT lesson_index FROM course_lesson_completions WHERE course_id=$1 AND student_id=$2 ORDER BY lesson_index', [courseId, claims.sub]);
     const indexes = completed.rows.map((row: any) => Number(row.lesson_index));
@@ -1507,8 +1597,33 @@ app.post('/api/v1/platform/courses/watch-progress', async (req, res, next) => {
       VALUES($1,$2,$3,$4,$5,$6,now(),$7,CASE WHEN $8 THEN COALESCE($9::timestamptz,now()) ELSE NULL END,now())
       ON CONFLICT(course_id,student_id,lesson_index) DO UPDATE SET watched_seconds=GREATEST(course_lesson_watch_progress.watched_seconds,EXCLUDED.watched_seconds),duration_seconds=GREATEST(course_lesson_watch_progress.duration_seconds,EXCLUDED.duration_seconds),last_position_seconds=EXCLUDED.last_position_seconds,heartbeat_at=now(),playing=EXCLUDED.playing,completed_at=COALESCE(course_lesson_watch_progress.completed_at,EXCLUDED.completed_at),updated_at=now()`,
       [courseId, claims.sub, lessonIndex, progress.watchedSeconds, progress.durationSeconds, progress.acceptedPositionSeconds, playing && !ended, complete, previous?.completed_at || null]);
+    let completedIndexes: number[] = [], courseComplete = false, awarded = 0, balance = 0;
+    if (complete) {
+      const course = (Array.isArray(state.courses) ? state.courses : []).find((item: any) => String(item?.id) === courseId);
+      await client.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))', [claims.sub, courseId]);
+      const insertedCompletion = await client.query('INSERT INTO course_lesson_completions(course_id,student_id,lesson_index) VALUES($1,$2,$3) ON CONFLICT DO NOTHING RETURNING lesson_index', [courseId, claims.sub, lessonIndex]);
+      const completed = await client.query('SELECT lesson_index FROM course_lesson_completions WHERE course_id=$1 AND student_id=$2 ORDER BY lesson_index', [courseId, claims.sub]);
+      completedIndexes = completed.rows.map((row: any) => Number(row.lesson_index));
+      courseComplete = courseLessonsComplete(Array.isArray(course?.lessons) ? course.lessons.length : 0, completedIndexes);
+      const points = Number(course?.completionPoints ?? course?.completion_points ?? 0);
+      if (insertedCompletion.rowCount && courseComplete && Number.isSafeInteger(points) && points > 0) {
+        const reason = `course_complete:${courseId}`;
+        const ledger = await client.query('INSERT INTO platform_point_ledger(student_id,delta,reason) VALUES($1,$2,$3) ON CONFLICT(student_id,reason) DO NOTHING RETURNING id', [claims.sub, points, reason]);
+        if (ledger.rowCount) {
+          const updated = await client.query('INSERT INTO platform_points(student_id,balance,lifetime_earned,updated_at) VALUES($1,$2,$2,now()) ON CONFLICT(student_id) DO UPDATE SET balance=platform_points.balance+EXCLUDED.balance,lifetime_earned=platform_points.lifetime_earned+EXCLUDED.lifetime_earned,updated_at=now() RETURNING balance', [claims.sub, points]);
+          awarded = points; balance = Number(updated.rows[0].balance);
+        } else {
+          const existing = await client.query('SELECT balance FROM platform_points WHERE student_id=$1', [claims.sub]);
+          balance = Number(existing.rows[0]?.balance || 0);
+        }
+      } else {
+        const existing = await client.query('SELECT balance FROM platform_points WHERE student_id=$1', [claims.sub]);
+        balance = Number(existing.rows[0]?.balance || 0);
+      }
+    }
     await client.query('COMMIT');
-    res.json({ status: 'OK', watched_seconds: progress.watchedSeconds, duration_seconds: progress.durationSeconds, completed: complete, accepted_position_seconds: progress.acceptedPositionSeconds });
+    if (awarded) await audit(claims.sub, 'course_points_earned', `course=${courseId};points=${awarded}`);
+    res.json({ status: 'OK', watched_seconds: progress.watchedSeconds, duration_seconds: progress.durationSeconds, completed: complete, accepted_position_seconds: progress.acceptedPositionSeconds, ...(complete ? { completed_indexes: completedIndexes, course_complete: courseComplete, awarded, balance } : {}) });
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); next(e); } finally { client.release(); }
 });
 app.post('/api/v1/platform/rewards/redeem', async (req, res, next) => {
@@ -1964,7 +2079,7 @@ app.post('/api/v1/video/process', async (req,res,next) => {
   } catch(e) { next(e); }
 });
 app.post('/api/v1/video/view', async (req,res,next) => {
-  const client = await pool.connect(); try { const token = str(req.body?.token), videoId = str(req.body?.video_id).trim(); if(!token || !videoId) fail(400,'token and video_id are required'); const claims=verifyToken(token); await requireDeviceSession(claims); if(claims.role!=='student') fail(403,'only students can consume course videos'); await requireVideoAccess(claims.sub,videoId); await requireReleasedCourseVideo(pool,claims.sub,videoId); if(!videoId.startsWith('external_')) { const playlist=await stat(path.join(MEDIA_ROOT,'hls',safeId(videoId),'playlist.m3u8')).catch(()=>null); if(!playlist?.isFile()) fail(409,'الفيديو لم يكتمل تحويله على الخادم بعد؛ لم يتم خصم مشاهدة.'); } await client.query('BEGIN'); await client.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',[claims.sub,videoId]); const found=await client.query('SELECT view_count FROM student_video_views WHERE student_id=$1 AND video_id=$2 FOR UPDATE',[claims.sub,videoId]); const current=Number(found.rows[0]?.view_count || 0), count=nextVideoViewCount(current,MAX_VIEWS); if(count===null) return fail(403,'maximum of 3 views reached'); await client.query('INSERT INTO student_video_views(student_id,video_id,view_count) VALUES($1,$2,$3) ON CONFLICT(student_id,video_id) DO UPDATE SET view_count=EXCLUDED.view_count',[claims.sub,videoId,count]); await client.query('COMMIT'); const mediaToken=tokenFor({sub:claims.sub,role:'student',device:claims.device,session_version:claims.session_version ?? 1,video_id:videoId},900); res.json({status:'AUTHORIZED',license_key:mediaToken,remaining_views:MAX_VIEWS-count,message:`authorized; view ${count} of ${MAX_VIEWS}`}); }
+  const client = await pool.connect(); try { const token = str(req.body?.token), videoId = str(req.body?.video_id).trim(); if(!token || !videoId) fail(400,'token and video_id are required'); const claims=verifyToken(token); await requireDeviceSession(claims); if(claims.role!=='student') fail(403,'only students can consume course videos'); await requireVideoAccess(claims.sub,videoId); await requireReleasedCourseVideo(pool,claims.sub,videoId); if(!videoId.startsWith('external_')) { const playlist=await stat(path.join(MEDIA_ROOT,'hls',safeId(videoId),'playlist.m3u8')).catch(()=>null); if(!playlist?.isFile()) fail(409,'الفيديو لم يكتمل تحويله على الخادم بعد؛ لم يتم خصم مشاهدة.'); } await client.query('BEGIN'); await client.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',[claims.sub,videoId]); const found=await client.query('SELECT view_count FROM student_video_views WHERE student_id=$1 AND video_id=$2 FOR UPDATE',[claims.sub,videoId]); const current=Number(found.rows[0]?.view_count || 0), count=nextVideoViewCount(current,MAX_VIEWS); if(count===null) return fail(403,'maximum of 3 views reached'); await client.query('INSERT INTO student_video_views(student_id,video_id,view_count) VALUES($1,$2,$3) ON CONFLICT(student_id,video_id) DO UPDATE SET view_count=EXCLUDED.view_count',[claims.sub,videoId,count]); await client.query('COMMIT'); const mediaToken=tokenFor({sub:claims.sub,role:'student',device:claims.device,session_version:claims.session_version ?? 1,video_id:videoId},MEDIA_TOKEN_TTL_SECONDS); res.json({status:'AUTHORIZED',license_key:mediaToken,remaining_views:MAX_VIEWS-count,message:`authorized; view ${count} of ${MAX_VIEWS}`}); }
   catch(e) { await client.query('ROLLBACK').catch(()=>{}); next(e); } finally { client.release(); }
 });
 app.post('/api/v1/admin/video/preview-token', async (req,res,next) => {
@@ -1973,8 +2088,8 @@ app.post('/api/v1/admin/video/preview-token', async (req,res,next) => {
     if (!videoId) fail(400, 'معرّف الفيديو غير صالح.');
     const playlist = await stat(path.join(MEDIA_ROOT, 'hls', videoId, 'playlist.m3u8')).catch(() => null);
     if (!playlist?.isFile()) fail(404, 'الفيديو لم يكتمل تجهيزه على الخادم بعد.');
-    const mediaToken = tokenFor({ sub: claims.sub, role: 'admin', device: claims.device, session_version: claims.session_version ?? 1, video_id: videoId, video_preview: true }, 900);
-    res.json({ status: 'AUTHORIZED', license_key: mediaToken, expires_in: 900 });
+    const mediaToken = tokenFor({ sub: claims.sub, role: 'admin', device: claims.device, session_version: claims.session_version ?? 1, video_id: videoId, video_preview: true }, MEDIA_TOKEN_TTL_SECONDS);
+    res.json({ status: 'AUTHORIZED', license_key: mediaToken, expires_in: MEDIA_TOKEN_TTL_SECONDS });
   } catch(e) { next(e); }
 });
 app.post('/api/v1/drm/license', async (req,res,next) => {
@@ -1987,7 +2102,7 @@ app.post('/api/v1/drm/license', async (req,res,next) => {
     const key=`rate:license:${deviceHash}`; const count=await redis.incr(key); if(count===1) await redis.expire(key,60); if(count>10) fail(429,'too many requests');
     const sessionKey=`session:${claims.sub}`; const existing=await redis.get(sessionKey); if(existing && existing!==deviceHash) fail(409,'student is already active on another device'); await redis.set(sessionKey,deviceHash,{EX:1800});
     const client=await pool.connect();
-    try { await client.query('BEGIN'); await client.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',[claims.sub,videoId]); const row=await client.query('SELECT view_count FROM student_video_views WHERE student_id=$1 AND video_id=$2 FOR UPDATE',[claims.sub,videoId]); const current=Number(row.rows[0]?.view_count||0), countNow=nextVideoViewCount(current,MAX_VIEWS); if(countNow===null) return fail(403,'maximum of 3 views reached'); await client.query('INSERT INTO student_video_views(student_id,video_id,view_count) VALUES($1,$2,$3) ON CONFLICT(student_id,video_id) DO UPDATE SET view_count=EXCLUDED.view_count',[claims.sub,videoId,countNow]); await client.query('COMMIT'); const mediaToken=tokenFor({sub:claims.sub,role:'student',device:claims.device,session_version:claims.session_version ?? 1,video_id:videoId},900); res.json({status:'AUTHORIZED',license_key:mediaToken,remaining_views:MAX_VIEWS-countNow,message:`authorized; view ${countNow} of ${MAX_VIEWS}`}); }
+    try { await client.query('BEGIN'); await client.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',[claims.sub,videoId]); const row=await client.query('SELECT view_count FROM student_video_views WHERE student_id=$1 AND video_id=$2 FOR UPDATE',[claims.sub,videoId]); const current=Number(row.rows[0]?.view_count||0), countNow=nextVideoViewCount(current,MAX_VIEWS); if(countNow===null) return fail(403,'maximum of 3 views reached'); await client.query('INSERT INTO student_video_views(student_id,video_id,view_count) VALUES($1,$2,$3) ON CONFLICT(student_id,video_id) DO UPDATE SET view_count=EXCLUDED.view_count',[claims.sub,videoId,countNow]); await client.query('COMMIT'); const mediaToken=tokenFor({sub:claims.sub,role:'student',device:claims.device,session_version:claims.session_version ?? 1,video_id:videoId},MEDIA_TOKEN_TTL_SECONDS); res.json({status:'AUTHORIZED',license_key:mediaToken,remaining_views:MAX_VIEWS-countNow,message:`authorized; view ${countNow} of ${MAX_VIEWS}`}); }
     catch(e) { await client.query('ROLLBACK').catch(()=>{}); throw e; } finally { client.release(); }
   } catch(e) { next(e); }
 });

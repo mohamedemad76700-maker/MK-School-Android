@@ -6,6 +6,8 @@
   "__examNext",
   "__examPick",
   "__examPrev",
+  "__examSetMode",
+  "__examTextAnswer",
   "addAssignment",
   "addCertificate",
   "addComplaint",
@@ -46,6 +48,7 @@
   "mkAddReward",
   "mkAdminAssignmentDelete",
   "mkAdminAssignmentModal",
+  "mkAdminAssignmentHint",
   "mkAdminAssignmentSave",
   "mkAdminExamDelete",
   "mkAdminExamModal",
@@ -184,6 +187,7 @@
   "saveGradeSubmission",
   "saveStudentAffairs",
   "saveSubmission",
+  "submitAssignment",
   "setAttendance",
   "showAccountRecoveryHelp",
   "showPage",
@@ -205,7 +209,9 @@
   "v32PaymentSettings",
   "v32RejectPayment",
   "v32SubmitPayment",
-  "viewStudentFile"
+  "viewStudentFile",
+  "viewSubmission",
+  "mkShowExamResult"
 ]);
   if (typeof module === 'object' && module.exports) module.exports = api;
   if (root && root.document) api.install(root);

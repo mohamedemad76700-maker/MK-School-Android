@@ -15,7 +15,7 @@
     const navigation = {
       admin: [['dashboard','الرئيسية','⌂'],['students','شؤون الطلبة','🗂️'],['courses','المنصة','🎓'],['community','مجتمع المنصة','💬'],['deviceControl','أجهزة الحسابات','📱'],['subjects','المواد','📚'],['assignments','الواجبات','📝'],['exams','الاختبارات','🧪'],['questionBank','بنك الأسئلة','🧠'],['grades','الدرجات والتقييمات','⭐'],['attendance','الحضور والغياب','🟢'],['schedule','الجدول','🗓️'],['reports','التقارير والتحليلات','📊'],['announcements','الإعلانات','📢'],['complaints','الشكاوى والدعم','🛟'],['certificates','الشهادات','🏅'],['messages','الرسائل','✉️'],['notifications','التنبيهات','🔔'],['payments','المدفوعات','💳'],['settings','الإعدادات','⚙️']],
       student: [['dashboard','الرئيسية','⌂'],['courses','المنصة','🎓'],['community','مجتمع المنصة','💬'],['assignments','واجباتي','📝'],['exams','اختباراتي','🧪'],['grades','درجاتي','⭐'],['attendance','حضوري','🟢'],['schedule','جدولي','🗓️'],['library','مكتبتي','📖'],['achievements','إنجازاتي','🏆'],['certificates','شهاداتي','🏅'],['complaints','الدعم والشكاوى','🛟'],['ai','MK AI','🤖'],['messages','الرسائل','✉️'],['notifications','التنبيهات','🔔'],['profile','ملفي','👤'],['payments','مدفوعاتي','💳']],
-      parent: [['dashboard','الرئيسية','⌂'],['courses','المنصة','🎓'],['community','مجتمع المنصة','💬'],['students','أبنائي','👨‍👩‍👧'],['grades','الدرجات والتقييمات','⭐'],['attendance','الحضور والغياب','🟢'],['schedule','الجدول','🗓️'],['assignments','الواجبات','📝'],['complaints','الدعم والشكاوى','🛟'],['messages','الرسائل','✉️'],['notifications','التنبيهات','🔔']]
+      parent: [['dashboard','الرئيسية','⌂'],['community','مجتمع المنصة','💬'],['students','أبنائي','👨‍👩‍👧'],['grades','الدرجات والتقييمات','⭐'],['attendance','الحضور والغياب','🟢'],['schedule','جدولي','🗓️'],['assignments','الواجبات','📝'],['complaints','الدعم والشكاوى','🛟'],['messages','الرسائل','✉️'],['notifications','التنبيهات','🔔']]
     };
     return navigation[role] || [];
   };
@@ -56,7 +56,14 @@
     const options = adminSubjectOptions();
     if (!options.length) return window.toast?.('أضف مادة دراسية للصف المطلوب أولًا.');
     window.mkAdminAssignmentSubjects = options;
-    window.openModal(`<h3>إنشاء واجب للطلاب</h3><form data-mk-submit="mkAdminAssignmentSave(event)"><label>عنوان الواجب<input id="mkAdminAssignmentTitle" maxlength="180" required></label><label>المادة والسنة الدراسية<select id="mkAdminAssignmentSubject">${options.map(({ subject, index }) => `<option value="${index}">${escape(subject.name)} — ${escape(subject.grade)}</option>`).join('')}</select></label><label>التعليمات<textarea id="mkAdminAssignmentDesc" rows="3" required></textarea></label><label>الأسئلة — سؤال في كل سطر<textarea id="mkAdminAssignmentQuestions" rows="6" required></textarea></label><div class="form-grid"><label>موعد التسليم<input id="mkAdminAssignmentDue" type="date" required></label><label>درجة السؤال<input id="mkAdminAssignmentPoints" type="number" min="1" max="1000" value="5" required></label></div><button class="btn primary">نشر الواجب</button></form>`);
+    window.openModal(`<h3>إنشاء واجب للطلاب</h3><form data-mk-submit="mkAdminAssignmentSave(event)"><label>عنوان الواجب<input id="mkAdminAssignmentTitle" maxlength="180" required></label><label>المادة والسنة الدراسية<select id="mkAdminAssignmentSubject">${options.map(({ subject, index }) => `<option value="${index}">${escape(subject.name)} — ${escape(subject.grade)}</option>`).join('')}</select></label><label>التعليمات<textarea id="mkAdminAssignmentDesc" rows="3" required></textarea></label><label>نوع الأسئلة<select id="mkAdminAssignmentType" data-mk-change="mkAdminAssignmentHint()"><option value="essay">مقالي</option><option value="multiple_choice">اختيار من متعدد</option></select></label><label>الأسئلة<textarea id="mkAdminAssignmentQuestions" rows="6" required></textarea><span id="mkAdminAssignmentQuestionHint" class="small muted">اكتب سؤالًا واحدًا في كل سطر للتصحيح اليدوي.</span></label><label id="mkAdminAssignmentRetryOption" class="list-item"><input id="mkAdminAssignmentRetry" type="checkbox" disabled> إعادة الأسئلة الخاطئة مرة واحدة ثم إظهار النتيجة والتصحيح</label><div class="form-grid"><label>موعد التسليم<input id="mkAdminAssignmentDue" type="date" required></label><label>درجة السؤال<input id="mkAdminAssignmentPoints" type="number" min="1" max="1000" value="5" required></label></div><button class="btn primary">نشر الواجب</button></form>`);
+  };
+  window.mkAdminAssignmentHint = function () {
+    const multiple = document.getElementById('mkAdminAssignmentType')?.value === 'multiple_choice';
+    const hint = document.getElementById('mkAdminAssignmentQuestionHint');
+    const retry = document.getElementById('mkAdminAssignmentRetry');
+    if (hint) hint.textContent = multiple ? 'كل سطر: السؤال | اختيار A | اختيار B | اختيار C | اختيار D | رقم الإجابة الصحيحة (1 إلى 4).' : 'اكتب سؤالًا واحدًا في كل سطر للتصحيح اليدوي.';
+    if (retry) { retry.disabled = !multiple; if (!multiple) retry.checked = false; }
   };
   window.mkAdminAssignmentSave = function (event) {
     event.preventDefault();
@@ -66,8 +73,20 @@
     const lines = String(document.getElementById('mkAdminAssignmentQuestions')?.value || '').split(/\n+/).map(text => text.trim()).filter(Boolean);
     const points = Number(document.getElementById('mkAdminAssignmentPoints')?.value);
     const due = document.getElementById('mkAdminAssignmentDue')?.value;
+    const answerType = document.getElementById('mkAdminAssignmentType')?.value === 'multiple_choice' ? 'multiple_choice' : 'essay';
+    const reviewWrongAnswers = answerType === 'multiple_choice' && !!document.getElementById('mkAdminAssignmentRetry')?.checked;
     if (!selected || !title || !lines.length || !Number.isInteger(points) || points < 1 || !due) return window.toast?.('أكمل بيانات الواجب وموعد التسليم.');
-    db.assignments.push({ id: uid('a'), teacher: 'admin', teacherId: 'admin', subject: selected.subject.name, grade: selected.subject.grade, title, desc: document.getElementById('mkAdminAssignmentDesc')?.value.trim() || '', due, points: points * lines.length, questionPoints: points, questions: lines.map((text, index) => ({ id: uid('aq'), text, number: index + 1 })) });
+    let questions;
+    if (answerType === 'multiple_choice') {
+      questions = [];
+      for (const [index, line] of lines.entries()) {
+        const parts = line.split('|').map(value => value.trim()), rawAnswer = String(parts[5] || '').toUpperCase();
+        const answerIndex = 'ABCD'.indexOf(rawAnswer) >= 0 ? 'ABCD'.indexOf(rawAnswer) : Number(rawAnswer) - 1;
+        if (parts.length !== 6 || !parts[0] || parts.slice(1, 5).some(value => !value) || new Set(parts.slice(1, 5)).size !== 4 || !Number.isInteger(answerIndex) || answerIndex < 0 || answerIndex > 3) return window.toast?.(`راجع السؤال ${index + 1}: اكتب السؤال وأربع اختيارات ورقم الإجابة من 1 إلى 4.`);
+        questions.push({ id: uid('aq'), type: 'multiple_choice', text: parts[0], options: parts.slice(1, 5), answerIndex, points, number: index + 1 });
+      }
+    } else questions = lines.map((text, index) => ({ id: uid('aq'), type: 'essay', text, number: index + 1, points }));
+    db.assignments.push({ id: uid('a'), teacher: 'admin', teacherId: 'admin', subject: selected.subject.name, grade: selected.subject.grade, title, desc: document.getElementById('mkAdminAssignmentDesc')?.value.trim() || '', due, answerType, reviewWrongAnswers, points: points * lines.length, questionPoints: points, questions });
     save(); audit('admin_assignment_create', title); closeModal(); renderPage(); window.toast?.('تم نشر الواجب للصف المحدد.');
   };
 
@@ -83,7 +102,7 @@
     if (!options.length) return window.toast?.('أضف مادة دراسية للصف المطلوب أولًا.');
     window.mkAdminExamSubjects = options;
     const bank = options.flatMap(({ subject }) => (db.questionBank || []).filter(question => String(question.subject) === String(subject.name) && String(question.grade) === String(subject.grade)).map(question => ({ question, subject })));
-    window.openModal(`<h3>إنشاء اختبار للطلاب</h3><form data-mk-submit="mkAdminExamSave(event)"><label>عنوان الاختبار<input id="mkAdminExamTitle" maxlength="180" required></label><label>المادة والسنة الدراسية<select id="mkAdminExamSubject">${options.map(({ subject, teacher, index }) => `<option value="${index}">${escape(subject.name)} — ${escape(subject.grade)}</option>`).join('')}</select></label><div class="form-grid"><label>المدة بالدقائق<input id="mkAdminExamDuration" type="number" min="1" max="180" value="30" required></label><label>درجة السؤال<input id="mkAdminExamPoints" type="number" min="1" max="100" value="1" required></label><label>درجة النجاح %<input id="mkAdminExamPass" type="number" min="0" max="100" value="50" required></label></div><div class="field"><b>أسئلة بنك الأسئلة</b><div class="list">${bank.map(({ question, subject }) => `<label class="list-item"><input type="checkbox" name="mkAdminExamQuestion" value="${escape(question.id)}"><span>${escape(question.text || 'سؤال مصور')} — ${escape(subject.name)} (${escape(subject.grade)})</span></label>`).join('') || '<div class="empty">لا توجد أسئلة بنك مطابقة للمواد الموزعة.</div>'}</div></div><label>أسئلة إضافية — السؤال | A | B | C | D | رقم الإجابة الصحيحة<textarea id="mkAdminExamManual" rows="5" placeholder="عاصمة مصر؟ | القاهرة | الإسكندرية | الجيزة | أسوان | 0"></textarea></label><button class="btn primary">نشر الاختبار</button></form>`);
+    window.openModal(`<h3>إنشاء اختبار للطلاب</h3><form data-mk-submit="mkAdminExamSave(event)"><label>عنوان الاختبار<input id="mkAdminExamTitle" maxlength="180" required></label><label>المادة والسنة الدراسية<select id="mkAdminExamSubject">${options.map(({ subject, teacher, index }) => `<option value="${index}">${escape(subject.name)} — ${escape(subject.grade)}</option>`).join('')}</select></label><div class="form-grid"><label>المدة بالدقائق<input id="mkAdminExamDuration" type="number" min="1" max="180" value="30" required></label><label>درجة السؤال<input id="mkAdminExamPoints" type="number" min="1" max="100" value="1" required></label><label>درجة النجاح %<input id="mkAdminExamPass" type="number" min="0" max="100" value="50" required></label><label>حد أسئلة تحدي الضعف<input id="mkAdminExamChallengeLimit" type="number" min="0" max="10" value="2" required><span class="small muted">عدد الأسئلة المؤهلة التي يمكن للطالب حلها دون اختيارات مقابل ضعف الدرجة.</span></label></div><label class="list-item"><input id="mkAdminExamRetry" type="checkbox"> بعد التسليم، أعد الأسئلة الخاطئة مرة واحدة ثم اعرض النتيجة والتصحيح</label><div class="field"><b>أسئلة بنك الأسئلة</b><div class="list">${bank.map(({ question, subject }) => `<label class="list-item"><input type="checkbox" name="mkAdminExamQuestion" value="${escape(question.id)}"><span>${escape(question.text || 'سؤال مصور')} — ${escape(subject.name)} (${escape(subject.grade)})${question.challengeKeywords?.length ? ' • تحدي ×2' : ''}</span></label>`).join('') || '<div class="empty">لا توجد أسئلة بنك مطابقة للمواد الموزعة.</div>'}</div></div><label>أسئلة إضافية — السؤال | A | B | C | D | رقم الإجابة (0=A إلى 3=D) | كلمات التحدي مفصولة بفاصلة<textarea id="mkAdminExamManual" rows="5" placeholder="عاصمة مصر؟ | القاهرة | الإسكندرية | الجيزة | أسوان | 0 | القاهرة، عاصمة مصر"></textarea></label><button class="btn primary">نشر الاختبار</button></form>`);
   };
   window.mkAdminExamSave = function (event) {
     event.preventDefault();
@@ -91,13 +110,21 @@
     const selected = window.mkAdminExamSubjects?.[Number(document.getElementById('mkAdminExamSubject')?.value)];
     const title = document.getElementById('mkAdminExamTitle')?.value.trim();
     const points = Number(document.getElementById('mkAdminExamPoints')?.value);
-    const questions = [...document.querySelectorAll('input[name="mkAdminExamQuestion"]:checked')].map(input => (db.questionBank || []).find(question => String(question.id) === String(input.value))).filter(question => question && String(question.subject) === String(selected?.subject.name) && String(question.grade) === String(selected?.subject.grade)).map(question => ({ text: question.text || '', imageFileId: question.imageFileId || '', options: (question.options || []).slice(0, 4), answer: Number(question.answer) || 0, points, source: 'bank', questionId: question.id }));
-    const manual = String(document.getElementById('mkAdminExamManual')?.value || '').split(/\n+/).map(line => line.split('|').map(part => part.trim())).filter(parts => parts.length >= 6 && parts[0] && parts.slice(1, 5).every(Boolean)).map(parts => ({ text: parts[0], options: parts.slice(1, 5), answer: Math.max(0, Math.min(3, Number(parts[5]) || 0)), points, source: 'manual' }));
+    const challengeLimit = Number(document.getElementById('mkAdminExamChallengeLimit')?.value);
+    const questions = [...document.querySelectorAll('input[name="mkAdminExamQuestion"]:checked')].map(input => (db.questionBank || []).find(question => String(question.id) === String(input.value))).filter(question => question && String(question.subject) === String(selected?.subject.name) && String(question.grade) === String(selected?.subject.grade)).map(question => ({ text: question.text || '', imageFileId: question.imageFileId || '', options: (question.options || []).slice(0, 4), answer: Number(question.answer) || 0, points, ...(Array.isArray(question.challengeKeywords) && question.challengeKeywords.length ? { challengeKeywords: question.challengeKeywords } : {}), source: 'bank', questionId: question.id }));
+    const manualLines = String(document.getElementById('mkAdminExamManual')?.value || '').split(/\r?\n/).map(line => line.trim()).filter(Boolean), manual = [];
+    for (const [index, line] of manualLines.entries()) {
+      const parts = line.split('|').map(part => part.trim()), rawAnswer = String(parts[5] || '').toUpperCase();
+      const answer = /^[0-3]$/.test(rawAnswer) ? Number(rawAnswer) : 'ABCD'.indexOf(rawAnswer);
+      const challengeKeywords = [...new Set((parts[6] || '').split(/[،,;؛]+/).map(value => value.trim()).filter(Boolean))];
+      if ((parts.length !== 6 && parts.length !== 7) || !parts[0] || parts.slice(1, 5).some(value => !value) || !Number.isInteger(answer) || answer < 0 || answer > 3 || challengeKeywords.length > 20 || challengeKeywords.some(keyword => keyword.length > 120)) return window.toast?.(`راجع السؤال اليدوي ${index + 1}: الإجابة من 0 إلى 3 أو A إلى D، وحد أقصى 20 كلمة مفتاحية.`);
+      manual.push({ text: parts[0], options: parts.slice(1, 5), answer, points, ...(challengeKeywords.length ? { challengeKeywords } : {}), source: 'manual' });
+    }
     questions.push(...manual);
     const duration = Number(document.getElementById('mkAdminExamDuration')?.value);
     const passPercent = Number(document.getElementById('mkAdminExamPass')?.value);
-    if (!selected || !title || !questions.length || !Number.isInteger(points) || points < 1 || !Number.isInteger(duration) || duration < 1 || duration > 180 || !Number.isFinite(passPercent) || passPercent < 0 || passPercent > 100) return window.toast?.('أكمل بيانات الاختبار وأضف سؤالًا واحدًا على الأقل.');
-    db.exams.push({ id: uid('e'), teacher: 'admin', teacherId: 'admin', subject: selected.subject.name, grade: selected.subject.grade, title, duration, passPercent, questionPoints: points, questions, active: true, createdAt: new Date().toISOString() });
+    if (!selected || !title || !questions.length || questions.length > 250 || !Number.isInteger(points) || points < 1 || !Number.isInteger(duration) || duration < 1 || duration > 180 || !Number.isFinite(passPercent) || passPercent < 0 || passPercent > 100 || !Number.isInteger(challengeLimit) || challengeLimit < 0 || challengeLimit > 10 || questions.some(question => question.challengeKeywords?.length > 20 || question.challengeKeywords?.some(keyword => keyword.length > 120))) return window.toast?.('أكمل بيانات الاختبار والأسئلة، وتأكد أن عدد الأسئلة لا يتجاوز 250 وحد تحدي الضعف من 0 إلى 10.');
+    db.exams.push({ id: uid('e'), teacher: 'admin', teacherId: 'admin', subject: selected.subject.name, grade: selected.subject.grade, title, duration, passPercent, questionPoints: points, challengeLimit, reviewWrongAnswers: !!document.getElementById('mkAdminExamRetry')?.checked, questions, active: true, createdAt: new Date().toISOString() });
     save(); audit('admin_exam_create', title); closeModal(); renderPage(); window.toast?.('تم نشر الاختبار للسنة والصف المحددين.');
   };
 
@@ -113,7 +140,7 @@
     const options = adminSubjectOptions();
     if (!options.length) return window.toast?.('أضف مادة دراسية أولًا.');
     window.mkAdminQuestionSubjects = options;
-    window.openModal(`<h3>إضافة سؤال للمادة</h3><form data-mk-submit="mkAdminQuestionSave(event)"><label>المادة والسنة الدراسية<select id="mkAdminQuestionSubject">${options.map(({ subject, teacher, index }) => `<option value="${index}">${escape(subject.name)} — ${escape(subject.grade)}</option>`).join('')}</select></label><label>نص السؤال أو اتركه فارغًا للصورة<textarea id="mkAdminQuestionText" rows="3"></textarea></label><label>صورة السؤال<input id="mkAdminQuestionImage" type="file" accept="image/jpeg,image/png,image/webp,image/gif"></label><div class="mcq-editor">${['A', 'B', 'C', 'D'].map((letter, index) => `<div class="mcq-row"><b>${letter}</b><input id="mkAdminQuestionOption${index}" required><input type="radio" name="mkAdminQuestionAnswer" value="${index}" ${index === 0 ? 'checked' : ''} aria-label="الإجابة الصحيحة"></div>`).join('')}</div><button class="btn primary">حفظ السؤال</button></form>`);
+    window.openModal(`<h3>إضافة سؤال للمادة</h3><form data-mk-submit="mkAdminQuestionSave(event)"><label>المادة والسنة الدراسية<select id="mkAdminQuestionSubject">${options.map(({ subject, teacher, index }) => `<option value="${index}">${escape(subject.name)} — ${escape(subject.grade)}</option>`).join('')}</select></label><label>نص السؤال أو اتركه فارغًا للصورة<textarea id="mkAdminQuestionText" rows="3"></textarea></label><label>صورة السؤال<input id="mkAdminQuestionImage" type="file" accept="image/jpeg,image/png,image/webp,image/gif"></label><div class="mcq-editor">${['A', 'B', 'C', 'D'].map((letter, index) => `<div class="mcq-row"><b>${letter}</b><input id="mkAdminQuestionOption${index}" required><input type="radio" name="mkAdminQuestionAnswer" value="${index}" ${index === 0 ? 'checked' : ''} aria-label="الإجابة الصحيحة"></div>`).join('')}</div><label>كلمات مفتاحية لإجابة تحدي الضعف (اختياري)<textarea id="mkAdminQuestionKeywords" rows="2" maxlength="1000" placeholder="مثال: القاهرة، عاصمة مصر"></textarea><span class="small muted">لو أضفتها، يقدر الطالب يخفي الاختيارات ويكتب إجابته. اكتب المرادفات مفصولة بفاصلة.</span></label><button class="btn primary">حفظ السؤال</button></form>`);
   };
   window.mkAdminQuestionSave = async function (event) {
     event.preventDefault();
@@ -122,11 +149,13 @@
     const text = document.getElementById('mkAdminQuestionText')?.value.trim() || '';
     const file = document.getElementById('mkAdminQuestionImage')?.files?.[0];
     const options = [0, 1, 2, 3].map(index => document.getElementById(`mkAdminQuestionOption${index}`)?.value.trim() || '');
+    const challengeKeywords = [...new Set((document.getElementById('mkAdminQuestionKeywords')?.value || '').split(/[\n,،;؛|]+/).map(value => value.trim()).filter(Boolean))];
     if (!selected || (!text && !file) || options.some(option => !option) || new Set(options).size !== 4) return window.toast?.('أدخل السؤال وأربع اختيارات مختلفة، أو أرفق صورة للسؤال.');
+    if (challengeKeywords.length > 20 || challengeKeywords.some(keyword => keyword.length > 120)) return window.toast?.('أدخل حتى 20 كلمة أو عبارة مفتاحية، بحد أقصى 120 حرفًا لكل واحدة.');
     if (file && (file.size > 5 * 1024 * 1024 || !/^image\/(jpeg|png|webp|gif)$/.test(file.type))) return window.toast?.('الصورة يجب أن تكون JPG أو PNG أو WebP أو GIF وبحجم لا يتجاوز 5MB.');
     let imageFileId = '';
     if (file) { try { imageFileId = (await window.mkUploadSchoolFile(file, 'exam-question')).id; } catch (error) { return window.toast?.(error.message || 'تعذر رفع صورة السؤال.'); } }
-    db.questionBank.push({ id: uid('q'), teacher: 'admin', subject: selected.subject.name, grade: selected.subject.grade, text, imageFileId, options, answer: Number(document.querySelector('input[name="mkAdminQuestionAnswer"]:checked')?.value || 0), type: 'اختيار من متعدد' });
+    db.questionBank.push({ id: uid('q'), teacher: 'admin', subject: selected.subject.name, grade: selected.subject.grade, text, imageFileId, options, answer: Number(document.querySelector('input[name="mkAdminQuestionAnswer"]:checked')?.value || 0), ...(challengeKeywords.length ? { challengeKeywords } : {}), type: 'اختيار من متعدد' });
     save(); audit('admin_question_create', `${selected.subject.name} — ${selected.subject.grade}`); closeModal(); renderPage(); window.toast?.('تم حفظ السؤال في بنك الأسئلة.');
   };
 
