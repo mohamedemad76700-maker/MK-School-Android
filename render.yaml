@@ -32,8 +32,6 @@ services:
           property: connectionString
       - key: JWT_SECRET
         generateValue: true
-      - key: MEDIA_ROOT
-        value: /var/data
       - key: PG_POOL_MAX
         value: "10"
       - key: VIDEO_BOOTSTRAP_ADMIN_EMAIL
