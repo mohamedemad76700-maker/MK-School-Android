@@ -45,6 +45,22 @@ test('watch progress rejects seeking and only credits plausible playback deltas'
   assert.equal(playback.acceptedPositionSeconds, 20);
 });
 
+test('watch progress caps a browser end position at the approved duration', () => {
+  const end = watch({
+    hasPrevious: true,
+    previousPlaying: true,
+    previousWatchedSeconds: 98,
+    previousDurationSeconds: 100,
+    previousPositionSeconds: 98,
+    elapsedSeconds: 2,
+    positionSeconds: 103,
+    ended: true,
+  });
+  assert.equal(end.acceptedPositionSeconds, 100);
+  assert.equal(end.watchedSeconds, 100);
+  assert.equal(end.completed, true);
+});
+
 test('video completion requires near-full watch time and a valid ended event', () => {
   const notEnded = watch({ hasPrevious: true, previousPlaying: true, previousWatchedSeconds: 98, previousDurationSeconds: 100, previousPositionSeconds: 98, elapsedSeconds: 1, positionSeconds: 100 });
   assert.equal(notEnded.completed, false);

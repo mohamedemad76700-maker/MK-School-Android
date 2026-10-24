@@ -1773,7 +1773,10 @@ app.post('/api/v1/platform/courses/watch-progress', async (req, res, next) => {
     if (trustedDuration === null) return fail(409, 'يجب على إدارة المنصة تحديد مدة الفيديو قبل اعتماد المشاهدة');
     const duration: number = trustedDuration;
     if (Math.abs(reportedDuration - duration) > Math.max(3, Math.ceil(duration * 0.05))) fail(400, 'مدة الفيديو لا تطابق المدة المعتمدة من إدارة المنصة');
-    if (position > duration) fail(400, 'موضع الفيديو يتجاوز مدته المعتمدة');
+    // Browsers can report a final playback position a fraction beyond the
+    // admin-approved duration. Clamp it to the trusted duration below instead
+    // of rejecting the final heartbeat; advanceWatchProgress also caps it.
+    const trustedPosition = Math.min(position, duration);
     const previous = (await client.query('SELECT watched_seconds,duration_seconds,last_position_seconds,heartbeat_at,playing,completed_at FROM course_lesson_watch_progress WHERE course_id=$1 AND student_id=$2 AND lesson_index=$3 FOR UPDATE', [courseId, claims.sub, lessonIndex])).rows[0];
     const heartbeatAt = previous?.heartbeat_at ? new Date(previous.heartbeat_at).getTime() : 0;
     const elapsed = heartbeatAt ? Math.max(0, Math.min(15, (Date.now() - heartbeatAt) / 1000)) : 0;
@@ -1781,7 +1784,7 @@ app.post('/api/v1/platform/courses/watch-progress', async (req, res, next) => {
       hasPrevious: !!previous, previousCompleted: !!previous?.completed_at, previousPlaying: previous?.playing === true,
       previousWatchedSeconds: Number(previous?.watched_seconds || 0), previousDurationSeconds: Number(previous?.duration_seconds || 0),
       previousPositionSeconds: Number(previous?.last_position_seconds || 0), elapsedSeconds: elapsed,
-      durationSeconds: duration, positionSeconds: position, ended,
+      durationSeconds: duration, positionSeconds: trustedPosition, ended,
     });
     const complete = progress.completed;
     await client.query(`INSERT INTO course_lesson_watch_progress(course_id,student_id,lesson_index,watched_seconds,duration_seconds,last_position_seconds,heartbeat_at,playing,completed_at,updated_at)
