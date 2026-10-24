@@ -1,5 +1,13 @@
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
 
+export function lessonReleaseWeek(lesson: any): unknown {
+  const configured = lesson?.releaseWeek;
+  const value = configured == null || (typeof configured === 'string' && !configured.trim())
+    ? lesson?.week
+    : configured;
+  return value;
+}
+
 export function releaseWeekIsOpen(releaseWeek: unknown, packageWeeks: unknown, enrolledAt: unknown, now = new Date()): boolean {
   const week = Number(releaseWeek ?? 1);
   const totalWeeks = Number(packageWeeks ?? 0);
@@ -18,10 +26,13 @@ export function lessonReleaseIsOpen(lesson: any, course: any, enrolledAt: unknow
     const releaseTime = new Date(releaseAt).getTime();
     return Number.isFinite(releaseTime) && Number.isFinite(now.getTime()) && releaseTime <= now.getTime();
   }
-  const releaseWeek = lesson?.releaseWeek ?? lesson?.week;
+  const releaseWeek = lessonReleaseWeek(lesson);
+  if (releaseWeek == null || (typeof releaseWeek === 'string' && !releaseWeek.trim())) return true;
+  // Older lesson records sometimes persist week 0 as a default/unscheduled value.
+  // Week-based drip content is one-indexed, so 0 must not hide a lesson forever.
+  if (Number(releaseWeek) === 0) return true;
   // No schedule means the lesson is available at enrollment. Older and optional
   // date-only lesson forms may persist an empty string instead of omitting it.
-  if (releaseWeek == null || (typeof releaseWeek === 'string' && !releaseWeek.trim())) return true;
   return releaseWeekIsOpen(
     releaseWeek,
     course?.packageEnabled ? course.packageWeeks : 0,

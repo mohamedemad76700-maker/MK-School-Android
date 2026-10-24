@@ -20,7 +20,7 @@ import { exceedsAiDailyLimit, filterAiCoursesForEnrolledStudents, minimizeAiCont
 import { applyPlatformStateChanges } from './platform-state-utils.js';
 import { canReadPublishedLibraryFile, canRegisterDeviceSession, requiresDeviceRegistration, teacherOwnsCourse } from './library-access-utils.js';
 import { isSessionVersionCurrent } from './auth-utils.js';
-import { advanceWatchProgress, courseLessonsComplete, lessonReleaseIsOpen, watchedEnough } from './course-release-utils.js';
+import { advanceWatchProgress, courseLessonsComplete, lessonReleaseIsOpen, lessonReleaseWeek, watchedEnough } from './course-release-utils.js';
 import { canReadSchoolFile, canUploadSchoolFile, isSafeSchoolStorageKey, safeSchoolOriginalFilename, schoolFileMimeForExtension } from './school-files-utils.js';
 import { validateProductionConfiguration } from './production-config-utils.js';
 import { isSafePasswordResetBase } from './password-reset-utils.js';
@@ -281,10 +281,16 @@ function passwordResetUrl(token: string): string {
   return url.toString();
 }
 
-const blockedStateKeys = new Set(['pass','password','passhash','passwordhash','salt','apikey','token','accesstoken','refreshtoken','licensekey','secret','secretkey','authorization','devicehash','devicefingerprint','data','blob','base64','filedata']);
+const blockedStateKeys = new Set(['pass','password','passhash','passwordhash','salt','apikey','token','accesstoken','refreshtoken','licensekey','secret','secretkey','authorization','devicehash','devicefingerprint','data','blob','base64','filedata','studentcode','studentcodes','messages','announcements']);
 function isSensitiveStateKey(key: string): boolean {
   const normalized = key.toLowerCase().replace(/[^a-z0-9]/g, '');
   return blockedStateKeys.has(normalized) || /password|passwd|passhash|token|secret|credential|authorization|cookie|devicehash|devicefingerprint|privatekey|licensekey/.test(normalized);
+}
+function isRetiredCommunicationNotification(value: any): boolean {
+  if (!value || typeof value !== 'object') return false;
+  return Object.prototype.hasOwnProperty.call(value, 'announcementId')
+    || Object.prototype.hasOwnProperty.call(value, 'messageId')
+    || /^(إعلان جديد|رسالة جديدة)/.test(String(value.title || ''));
 }
 function sanitizeState(input: unknown): any {
   // Inline file payloads are never valid durable school data. Remove legacy data URLs
@@ -292,8 +298,39 @@ function sanitizeState(input: unknown): any {
   if (typeof input === 'string' && /^(?:data:|blob:|idb:)/i.test(input.trim())) return '';
   if (Array.isArray(input)) return input.map(sanitizeState);
   if (input && typeof input === 'object') {
+    const source = input as Record<string, any>;
+    const students = Array.isArray(source.students) ? source.students : [];
+    const parents = Array.isArray(source.parents) ? source.parents : [];
+    const hasLegacyStudentCodes = students.some((student:any) => Object.prototype.hasOwnProperty.call(student || {}, 'studentCode')) || parents.some((parent:any) => Array.isArray(parent?.studentCodes));
+    if (hasLegacyStudentCodes) {
+      const migrated = structuredClone(source);
+      const codeToId = new Map<string,string>();
+      for (const student of migrated.students || []) {
+        const code = String(student?.studentCode || '').trim().toUpperCase();
+        if (code && student?.id != null) codeToId.set(code, String(student.id));
+        if (student && typeof student === 'object') delete student.studentCode;
+      }
+      for (const parent of migrated.parents || []) {
+        if (!parent || typeof parent !== 'object') continue;
+        const ids:string[] = [];
+        const legacyLinks = [...(Array.isArray(parent.studentIds) ? parent.studentIds : []), ...(Array.isArray(parent.studentCodes) ? parent.studentCodes : [])];
+        for (const legacyLink of legacyLinks) {
+          const value = String(legacyLink || '').trim();
+          if (!value) continue;
+          const resolved = students.some((student:any) => String(student?.id ?? '') === value) ? value : codeToId.get(value.toUpperCase());
+          if (resolved && !ids.includes(resolved)) ids.push(resolved);
+        }
+        parent.studentIds = ids;
+        delete parent.studentCodes;
+      }
+      return sanitizeState(migrated);
+    }
     const output: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(input as Record<string, unknown>)) {
+      if (key === 'notifications' && Array.isArray(value)) {
+        output[key] = value.filter((notification:any) => !isRetiredCommunicationNotification(notification)).map(sanitizeState);
+        continue;
+      }
       if (!isSensitiveStateKey(key) && !['classes', 'classid', 'class_id'].includes(key.toLowerCase())) output[key] = sanitizeState(value);
     }
     return output;
@@ -390,8 +427,13 @@ function filterState(raw: any, claims: Claims, parentIds: string[] | null = null
             return lessonReleaseIsOpen(lesson, x, dates[studentId]);
           });
           const releaseAt = typeof lesson?.releaseAt === 'string' ? lesson.releaseAt : '';
-          const label = releaseAt ? `محتوى متاح في ${new Date(releaseAt).toLocaleString('ar-EG')}` : `محتوى الأسبوع ${Number(lesson?.releaseWeek ?? lesson?.week ?? index + 1)} متاح لاحقًا`;
-          return open ? lesson : { id: lesson?.id || `locked_${index}`, title: label, releaseAt, releaseWeek: lesson?.releaseWeek ?? lesson?.week ?? 1, videoRef: '', videoUrl: '', description: '', duration: '', locked: true };
+          const releaseWeek = lessonReleaseWeek(lesson);
+          const label = releaseAt
+            ? `محتوى متاح في ${new Date(releaseAt).toLocaleString('ar-EG')}`
+            : Number.isSafeInteger(releaseWeek) && Number(releaseWeek) >= 1
+              ? `محتوى الأسبوع ${Number(releaseWeek)} متاح لاحقًا`
+              : 'محتوى هذا الدرس متاح لاحقًا';
+          return open ? lesson : { id: lesson?.id || `locked_${index}`, title: label, releaseAt, releaseWeek: Number.isSafeInteger(releaseWeek) && Number(releaseWeek) >= 1 ? Number(releaseWeek) : 1, videoRef: '', videoUrl: '', description: '', duration: '', locked: true };
         });
         delete copy.enrolledAtByStudent;
       }
@@ -421,9 +463,15 @@ function filterState(raw: any, claims: Claims, parentIds: string[] | null = null
   if (claims.role === 'parent') state.courses = [];
   if (claims.role === 'parent') state.courseProgress = {};
   if (Array.isArray(state.notifications)) state.notifications = state.notifications.filter((x: any) => String(x?.to || '') === id || String(x?.to || '') === 'all');
-  if (Array.isArray(state.messages)) state.messages = state.messages.filter((x: any) => String(x?.to || '') === id || String(x?.from || '') === id);
+  // Private one-to-one messages were replaced by the moderated community forum.
+  // Do not expose legacy message records in account state.
+  delete state.messages;
   if (Array.isArray(state.complaints)) state.complaints = state.complaints.filter((x: any) => claims.role === 'teacher' ? belongsToTeacherScope(x) : [x?.studentId,x?.student,x?.from,x?.userId].some(v => v != null && (String(v) === id || linkedIds.includes(String(v)))));
-  if (Array.isArray(state.communityTopics)) state.communityTopics = state.communityTopics.filter((x: any) => x?.status === 'approved' || String(x?.authorId ?? x?.userId ?? '') === id);
+  if (Array.isArray(state.communityTopics)) state.communityTopics = state.communityTopics.filter((x: any) => {
+    const mine = String(x?.authorId ?? x?.userId ?? '') === id;
+    const recipient = String(x?.recipientType ?? x?.targetType ?? 'public');
+    return mine || (x?.status === 'approved' && recipient === 'public');
+  });
   if (state.platformPoints && typeof state.platformPoints === 'object') for (const key of Object.keys(state.platformPoints)) if (!scopedStudentIds.includes(key)) delete state.platformPoints[key];
   if (Array.isArray(state.mkLibrary)) state.mkLibrary = state.mkLibrary.filter((x: any) => !x?.private && !x?.teacherOnly || (claims.role === 'teacher' && String(x?.teacher ?? x?.teacherId ?? '') === id));
   if (claims.role === 'teacher') {
@@ -507,12 +555,10 @@ function mergeState(baseInput: any, incomingInput: any, claims: Claims): any {
       body: `${studentName} أرسل طلب دفع Vodafone Cash لـ${p?.kind === 'library' ? 'مورد المكتبة' : 'دورة'} ${paymentItemName(p)}`,
       date: p.createdAt, read: false, paymentId: p.id,
     }))];
-    mergeKey('messages', x => String(x?.from || '') === id);
     for (const key of ['courseProgress','videoViews']) if (incomingObj[key] && typeof incomingObj[key] === 'object') base[key] = Object.fromEntries(Object.entries(incomingObj[key]).filter(([k]) => k.endsWith(`::${id}`)));
   } else if (claims.role === 'parent') {
     const ids = (base.parents || []).find((p: any) => String(p?.id) === id)?.studentIds || [];
     mergeKey('complaints', x => ids.includes(String(x?.studentId || '')));
-    mergeKey('messages', x => String(x?.from || '') === id);
   }
   // Community posts are member-created, but moderation fields and author identity are server-owned.
   if (claims.role !== 'admin') {
@@ -521,14 +567,27 @@ function mergeState(baseInput: any, incomingInput: any, claims: Claims): any {
     const existingById = new Map(existingTopics.map((topic:any) => [String(topic?.id ?? ''), topic]));
     const actorProfile = [...(Array.isArray(base.students)?base.students:[]), ...(Array.isArray(base.teachers)?base.teachers:[]), ...(Array.isArray(base.parents)?base.parents:[])].find((item:any) => String(item?.id) === id);
     const actorName = String(actorProfile?.name || actorProfile?.fullName || id).slice(0,120);
-    const accepted = incomingTopics.filter((topic:any) => topic && typeof topic.id === 'string' && String(topic.authorId ?? '') === id && String(topic.authorRole ?? '') === claims.role && ['scientific','support'].includes(String(topic.category)) && String(topic.title ?? '').trim().length > 0 && String(topic.body ?? '').trim().length > 0).map((topic:any) => {
+    const recipientForTopic = (topic:any) => {
+      const recipientType = String(topic?.recipientType ?? topic?.targetType ?? 'public');
+      if (recipientType === 'public') return { recipientType: 'public', recipientLabel: 'المجتمع العام', targetCourseId: '', targetInstructor: '' };
+      if (recipientType === 'support') return { recipientType: 'support', recipientLabel: 'دعم المنصة', targetCourseId: '', targetInstructor: '' };
+      if (recipientType !== 'instructor' || claims.role !== 'student') return null;
+      const course = (Array.isArray(base.courses) ? base.courses : []).find((item:any) => String(item?.id ?? '') === String(topic?.targetCourseId ?? '') && item?.active !== false);
+      if (!course || !(Array.isArray(course.enrollments) ? course.enrollments : []).map(String).includes(id)) return null;
+      const instructor = String(course.instructor ?? course.teacherName ?? '').trim().slice(0,200);
+      if (!instructor) return null;
+      return { recipientType: 'instructor', recipientLabel: instructor, targetCourseId: String(course.id), targetInstructor: instructor };
+    };
+    const accepted: any[] = incomingTopics.filter((topic:any) => topic && typeof topic.id === 'string' && String(topic.authorId ?? '') === id && String(topic.authorRole ?? '') === claims.role && ['scientific','support'].includes(String(topic.category)) && String(topic.title ?? '').trim().length > 0 && String(topic.body ?? '').trim().length > 0).map((topic:any) => {
+      const recipient = recipientForTopic(topic);
+      if (!recipient) return null;
       const old:any = existingById.get(String(topic.id));
       if (old) {
         if (String(old.authorId) !== id || old.status !== 'pending') return old;
-        return { ...old, title: String(topic.title).slice(0,160), body: String(topic.body).slice(0,6000), category: topic.category, attachment: topic.attachment || null };
+        return { ...old, title: String(topic.title).slice(0,160), body: String(topic.body).slice(0,6000), category: topic.category, attachment: topic.attachment || null, ...recipient };
       }
-      return { id: String(topic.id), authorId: id, authorRole: claims.role, authorName: actorName, category: topic.category, title: String(topic.title).slice(0,160), body: String(topic.body).slice(0,6000), attachment: topic.attachment || null, status: 'pending', createdAt: new Date().toISOString(), comments: [] };
-    });
+      return { id: String(topic.id), authorId: id, authorRole: claims.role, authorName: actorName, category: topic.category, title: String(topic.title).slice(0,160), body: String(topic.body).slice(0,6000), attachment: topic.attachment || null, ...recipient, status: 'pending', createdAt: new Date().toISOString(), comments: [] };
+    }).filter((topic:any) => topic);
     const incomingIds = new Set(accepted.map((topic:any) => String(topic.id)));
     base.communityTopics = [...existingTopics.filter((topic:any) => String(topic.authorId ?? '') !== id || topic.status !== 'pending' || incomingIds.has(String(topic.id))), ...accepted.filter((topic:any) => !existingById.has(String(topic.id)))];
   }
@@ -678,6 +737,25 @@ async function initDatabase(): Promise<void> {
   const migrationsDir = path.join(ROOT, 'migrations');
   const files = (await readdir(migrationsDir)).filter(f => /^\d+.*\.sql$/.test(f)).sort();
   for (const file of files) await pool.query(await readFile(path.join(migrationsDir, file), 'utf8'));
+  // Permanently migrate retired platform fields after the record tables are ready.
+  const cleanupClient = await pool.connect();
+  try {
+    await cleanupClient.query('BEGIN');
+    await cleanupClient.query("INSERT INTO platform_state(id,state,updated_at,revision,updated_by) VALUES(1,'{}'::jsonb,now(),0,'system-migration') ON CONFLICT(id) DO NOTHING");
+    const storedState = await readPlatformState(cleanupClient);
+    const cleanedState = sanitizeState(storedState);
+    if (JSON.stringify(storedState) !== JSON.stringify(cleanedState)) {
+      await persistPlatformState(cleanupClient, storedState, cleanedState, 'system-migration');
+      await cleanupClient.query("UPDATE platform_state SET state='{}'::jsonb,updated_at=now(),revision=revision+1,updated_by='system-migration' WHERE id=1");
+      console.info('[startup] migrated retired student codes and communication records from platform state');
+    }
+    await cleanupClient.query('COMMIT');
+  } catch (error) {
+    await cleanupClient.query('ROLLBACK').catch(() => {});
+    throw error;
+  } finally {
+    cleanupClient.release();
+  }
   await resumeInterruptedVideoJobs();
   const email = process.env.VIDEO_BOOTSTRAP_ADMIN_EMAIL?.trim();
   const password = process.env.VIDEO_BOOTSTRAP_ADMIN_PASSWORD;
@@ -895,7 +973,7 @@ app.post('/api/v1/auth/register', registerIpLimiter, registerEmailLimiter, async
 function cleanProfile(input: any, fallback: Record<string, unknown> = {}): Record<string, unknown> {
   const raw = input && typeof input === 'object' && !Array.isArray(input) ? input : {};
   const output: Record<string, unknown> = {};
-  const stringFields = ['name','studentCode','grade','birthDate','joined','subject','track'];
+  const stringFields = ['name','grade','birthDate','joined','subject','track'];
   for (const key of stringFields) {
     const value = raw[key] ?? fallback[key];
     if (typeof value === 'string') output[key] = value.slice(0, key === 'name' ? 200 : 255);
@@ -1647,10 +1725,10 @@ app.post('/api/v1/platform/rewards/redeem', async (req, res, next) => {
     await client.query("INSERT INTO platform_state(id,state,updated_at,revision,updated_by) VALUES(1,'{}'::jsonb,now(),0,$1) ON CONFLICT(id) DO NOTHING", [claims.sub]);
     await client.query('SELECT revision FROM platform_state WHERE id=1 FOR UPDATE');
     const existingState = await readPlatformState(client), state = structuredClone(existingState);
-    state.messages = Array.isArray(state.messages) ? state.messages : [];
-    const messageId = `reward_redemption_${redemption.rows[0].id}`;
-    state.messages = state.messages.filter((message: any) => String(message?.id) !== messageId);
-    state.messages.push({ id: messageId, from: 'admin', fromName: 'متجر MK', fromRole: 'admin', to: claims.sub, toName: '', toRole: 'student', text: `تم استبدال ${r.title} مقابل ${cost} نقطة. كود الاستلام الخاص بك: ${code}`, date: new Date().toISOString(), read: false });
+    state.notifications = Array.isArray(state.notifications) ? state.notifications : [];
+    const notificationId = `reward_redemption_${redemption.rows[0].id}`;
+    state.notifications = state.notifications.filter((notification: any) => String(notification?.id) !== notificationId);
+    state.notifications.push({ id: notificationId, to: claims.sub, title: 'مكافأتك جاهزة', body: `تم استبدال ${r.title} مقابل ${cost} نقطة. كود الاستلام الخاص بك: ${code}`, date: new Date().toISOString(), read: false });
     await persistPlatformState(client, existingState, state, claims.sub);
     await client.query("UPDATE platform_state SET state='{}'::jsonb,updated_at=now(),revision=revision+1,updated_by=$1 WHERE id=1", [claims.sub]);
     await client.query('COMMIT'); await audit(claims.sub,'platform_reward_redeem',`reward=${id};redemption=${redemption.rows[0].id}`); res.json({ status:'OK',balance:balance-cost,redemption_id:redemption.rows[0].id,title:r.title,code });
@@ -2157,7 +2235,7 @@ app.post('/api/v1/ai/deep-search', aiLimiter, async (req,res,next) => {
       scopedState.courses = filterAiCoursesForEnrolledStudents(scopedState.courses, eligibleIds.map(String));
     }
     // Send only educational fields to the third-party AI provider; exclude identifiers,
-    // names, contact details, birthdays, student codes, files and secret material.
+    // names, contact details, birthdays, account IDs, files and secret material.
     const context = minimizeAiContext(scopedState, 60000);
     const messages=[{role:'system',content:'You are a precise educational tutor. Explain clearly, distinguish facts from uncertainty, and never claim to have browsed the web unless browsing data was actually provided. Answer in the student\'s language. The learning context is minimized and may omit identifying details; never infer missing personal information.'},...history,{role:'user',content:`بيانات تعليمية مصرح بها من منصة MK (تم حذف المعرفات والبيانات الشخصية):\n${context}\n\nQuestion: ${prompt}`}];
     const response=await fetch('https://api.groq.com/openai/v1/chat/completions',{method:'POST',headers:{Authorization:`Bearer ${key}`,'Content-Type':'application/json'},body:JSON.stringify({model:GROQ_MODEL,messages,temperature:0.2,max_tokens:1024}),signal:AbortSignal.timeout(20000)});

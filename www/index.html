@@ -402,6 +402,20 @@ body.mk-platform-only #main{width:100%;max-width:1240px;margin-inline:auto;min-w
   .mk-market-card:hover,.platform-content-card:hover{transform:translateY(-3px);box-shadow:0 18px 38px #17203316}
   .mk-game-hud{border-radius:24px}
   @media(prefers-reduced-motion:reduce){*,*::before,*::after{scroll-behavior:auto!important;transition-duration:.01ms!important;animation-duration:.01ms!important;animation-iteration-count:1!important}}
+</style>
+<style id="mk-v19-final-polish">
+.mk-market-hero{min-height:220px;padding:clamp(20px,3vw,32px);gap:18px;border-radius:24px}
+.mk-market-hero-art{width:min(178px,100%);border-radius:38px}
+.mk-market-hero-art b{font-size:28px}
+.mk-course-market{gap:20px}
+body.mk-platform-active .mk-platform-hub-panel>.stats{grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr));align-items:stretch}
+body.mk-platform-active .mk-platform-hub-panel>.stats>.stat{min-width:0}
+body.mk-platform-active .mk-platform-hub-panel>.stats>.stat .num{font-size:clamp(21px,2.3vw,29px);overflow-wrap:anywhere}
+.mk-community-topic{box-shadow:0 8px 24px #17203308}
+.mk-community-topic-head .small{line-height:1.6}
+.mk-community-topic h3{overflow-wrap:anywhere}
+@media(max-width:850px){.mk-market-hero{grid-template-columns:minmax(0,1fr) 140px;min-height:205px}.mk-market-hero-art{width:132px;border-radius:30px}.mk-market-hero-art b{font-size:23px}}
+@media(max-width:600px){.mk-market-hero{grid-template-columns:minmax(0,1fr);min-height:0;padding:22px;border-radius:20px}.mk-market-hero-art{display:none}.mk-course-market{gap:16px}.mk-market-hero h2{font-size:28px}.mk-market-hero p{margin-bottom:0}}
 </style></head>
 <body>
 <div id="toast" class="toast" role="status" aria-live="polite" aria-atomic="false"></div>
@@ -428,30 +442,27 @@ body.mk-platform-only #main{width:100%;max-width:1240px;margin-inline:auto;min-w
   </div>
 </div>
 <div id="app" class="app">
-  <header class="topbar"><div class="topbar-inner"><button id="sideToggleBtn" class="icon-btn" data-mk-click="toggleSide()" aria-label="فتح قائمة التنقل" aria-controls="sidebar" aria-expanded="false">☰</button><div class="logo-mini"><span>MK</span> MK Platform</div><div class="mk-platform-points-pill" id="mkPlatformPointsPill" hidden aria-label="رصيد نقاطك">⭐ <b id="mkPlatformPointsValue">0</b><span>نقطة</span></div><div class="mk-platform-menu-wrap" id="mkPlatformMenuWrap"><button class="mk-platform-menu-trigger" id="mkPlatformMenuTrigger" type="button" aria-label="فتح أقسام المنصة" aria-haspopup="menu" aria-expanded="false" data-mk-click="mkTogglePlatformMenu()">⋮</button><div class="mk-platform-menu" id="mkPlatformMenu" role="menu" aria-label="أقسام المنصة"></div></div><div class="top-actions"><button class="font-toggle" id="fontToggleBtn" data-mk-click="cycleFontSize()" title="حجم الخط" aria-label="تغيير حجم الخط">A</button><button class="icon-btn" data-mk-click="toggleTheme()" aria-label="تغيير المظهر">◐</button><button class="icon-btn" data-mk-click="showPage('notifications')" aria-label="التنبيهات">🔔</button><button class="icon-btn hide-mobile" data-mk-click="showPage('messages')" aria-label="الرسائل">✉️</button></div></div></header>
+  <header class="topbar"><div class="topbar-inner"><button id="sideToggleBtn" class="icon-btn" data-mk-click="toggleSide()" aria-label="فتح قائمة التنقل" aria-controls="sidebar" aria-expanded="false">☰</button><div class="logo-mini"><span>MK</span> MK Platform</div><div class="mk-platform-points-pill" id="mkPlatformPointsPill" hidden aria-label="رصيد نقاطك">⭐ <b id="mkPlatformPointsValue">0</b><span>نقطة</span></div><div class="mk-platform-menu-wrap" id="mkPlatformMenuWrap"><button class="mk-platform-menu-trigger" id="mkPlatformMenuTrigger" type="button" aria-label="فتح أقسام المنصة" aria-haspopup="menu" aria-expanded="false" data-mk-click="mkTogglePlatformMenu()">⋮</button><div class="mk-platform-menu" id="mkPlatformMenu" role="menu" aria-label="أقسام المنصة"></div></div><div class="top-actions"><button class="font-toggle" id="fontToggleBtn" data-mk-click="cycleFontSize()" title="حجم الخط" aria-label="تغيير حجم الخط">A</button><button class="icon-btn" data-mk-click="toggleTheme()" aria-label="تغيير المظهر">◐</button><button class="icon-btn" data-mk-click="mkOpenNotifications()" aria-label="عرض التنبيهات" title="التنبيهات">🔔</button></div></div></header>
   <div class="layout"><aside id="sidebar" class="sidebar" aria-label="قائمة التنقل الرئيسية"></aside><main id="main" class="main" tabindex="-1"></main></div>
 </div>
 <div id="modal" class="modal" role="dialog" aria-modal="true" aria-hidden="true" aria-label="نافذة حوارية" data-mk-close-on-backdrop="true"><div id="modalBox" class="modal-box" tabindex="-1"></div></div>
-<script src="assets/js/01-mk-school.js?v=20261023-1"></script>
+<script src="assets/js/01-mk-school.js?v=20261024-2"></script>
 
 
 
 
 
-<!-- V29.6 — Communications + Certificates hardening -->
-<script src="assets/js/02-mk-school.js?v=20261019-2"></script>
-
-
-<script src="assets/js/03-mk-school.js?v=20261019-2"></script>
+<!-- Certificates -->
+<script src="assets/js/02-mk-school.js?v=20261024-1"></script>
 
 <script src="assets/js/vendor/hls.min.js?v=1.7.3"></script>
-<script src="assets/js/04-mk-school.js?v=20261024-1"></script>
+<script src="assets/js/04-mk-school.js?v=20261024-2"></script>
 <script src="assets/js/05-mk-school.js?v=20261019-3"></script>
 
-<script src="assets/js/06-mk-school.js?v=20261023-2"></script>
-<script src="assets/js/07-platform-library.js?v=20261023-3"></script>
-<script src="assets/js/08-admin-control.js?v=20261023-1"></script>
-<script src="assets/js/09-secure-events.js?v=20261023-2"></script>
+<script src="assets/js/06-mk-school.js?v=20261024-1"></script>
+<script src="assets/js/07-platform-library.js?v=20261024-1"></script>
+<script src="assets/js/08-admin-control.js?v=20261024-1"></script>
+<script src="assets/js/09-secure-events.js?v=20261024-1"></script>
 <script src="assets/js/10-ai-assistant-bubble.js?v=20261023-1"></script>
 <script src="assets/js/11-assessment-review.js?v=20261023-2"></script>
 </body></html>

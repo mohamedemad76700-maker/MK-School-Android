@@ -1,7 +1,7 @@
 /* Administrator-managed books and summaries, with server-enforced paid access. */
 (function () {
   const role = () => String(current?.role || '').toLowerCase();
-  const admin = () => role() === 'admin' || String(current?.id || '') === 'admin';
+  const admin = () => role() === 'admin';
   const student = () => role() === 'student';
   const escapeHtml = value => window.esc(String(value ?? ''));
   const quote = value => String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/[\r\n]/g, ' ');
@@ -248,14 +248,14 @@
   };
   window.mkFilterCourseSubject=function(subject){const select=document.getElementById('mkCourseSubjectFilter');if(select)select.value=String(subject||'');window.mkFilterCourses?.();};
   const platformTabsByRole={
-    admin:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['studentAffairs','بيانات المستخدمين والتسجيل','👥'],['deviceControl','فك ربط الأجهزة','📱'],['announcements','إعلانات المنصة','📣'],['community','المنتدى','💬'],['assignments','الواجبات','📝'],['exams','الاختبارات','🧪'],['questionBank','بنك الأسئلة','🧠'],['grades','الدرجات','⭐'],['certificates','الشهادات','🏅'],['ai','MK AI','🤖'],['rewards','متجر النقاط','⭐'],['library','المكتبة','📚'],['payments','طلبات الدفع','💳'],['activityLog','سجل النشاط','🧾'],['settings','إعدادات المنصة','⚙️'],['messages','الرسائل','✉️'],['notifications','التنبيهات','🔔']],
-    teacher:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['announcements','إعلانات المنصة','📣'],['community','المنتدى','💬'],['assignments','الواجبات','📝'],['exams','الاختبارات','🧪'],['questionBank','بنك الأسئلة','🧠'],['grades','الدرجات','⭐'],['settings','إعدادات الحساب','⚙️'],['messages','الرسائل','✉️'],['notifications','التنبيهات','🔔']],
-    parent:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['announcements','إعلانات المنصة','📣'],['community','المنتدى','💬'],['assignments','واجبات الأبناء','📝'],['grades','درجات الأبناء','⭐'],['familyLink','ربط الأبناء','👨‍👩‍👧'],['ai','المساعد الذكي','🤖'],['settings','إعدادات الحساب','⚙️'],['messages','الرسائل','✉️'],['notifications','التنبيهات','🔔']],
-    student:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['announcements','إعلانات المنصة','📣'],['community','المنتدى','💬'],['exams','اختباراتي','🧪'],['grades','درجاتي','⭐'],['certificates','شهاداتي','🏅'],['achievements','إنجازاتي','🏆'],['rewards','متجر النقاط','⭐'],['library','مكتبتي','📚'],['payments','مدفوعاتي','💳'],['familyLink','ربط ولي الأمر','👨‍👩‍👧'],['ai','المساعد الذكي','🤖'],['profile','حسابي وإحصائياتي','👤'],['settings','إعدادات الحساب','⚙️'],['messages','الرسائل','✉️'],['notifications','التنبيهات','🔔']]
+    admin:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['studentAffairs','بيانات الطلاب كاملة','👥'],['subjects','المواد','📚'],['deviceControl','إدارة الأجهزة','📱'],['community','المنتدى','💬'],['assignments','الواجبات','📝'],['exams','الاختبارات','🧪'],['questionBank','بنك الأسئلة','🧠'],['grades','الدرجات','⭐'],['attendance','الحضور والغياب','🟢'],['schedule','الجدول','🗓️'],['reports','التقارير والتحليلات','📊'],['complaints','الدعم والشكاوى','🛟'],['certificates','الشهادات','🏅'],['ai','MK AI','🤖'],['rewards','متجر النقاط','⭐'],['library','المكتبة','📚'],['payments','طلبات الدفع','💳'],['activityLog','سجل النشاط','🧾'],['settings','إعدادات المنصة','⚙️']],
+    teacher:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['community','المنتدى','💬'],['assignments','الواجبات','📝'],['exams','الاختبارات','🧪'],['questionBank','بنك الأسئلة','🧠'],['grades','الدرجات','⭐'],['settings','إعدادات الحساب','⚙️']],
+    parent:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['community','المنتدى','💬'],['assignments','واجبات الأبناء','📝'],['grades','درجات الأبناء','⭐'],['familyLink','ربط الأبناء','👨‍👩‍👧'],['ai','المساعد الذكي','🤖']],
+    student:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['community','المنتدى','💬'],['exams','اختباراتي','🧪'],['grades','درجاتي','⭐'],['certificates','شهاداتي','🏅'],['achievements','إنجازاتي','🏆'],['rewards','متجر النقاط','⭐'],['library','مكتبتي','📚'],['payments','مدفوعاتي','💳'],['familyLink','ربط ولي الأمر','👨‍👩‍👧'],['ai','المساعد الذكي','🤖'],['profile','حسابي وإحصائياتي','👤']]
   };
   delete platformTabsByRole.teacher;
   window.mkPlatformAdminTabs=platformTabsByRole.admin;
-  const platformPageRoutes={community:'community',assignments:'assignments',exams:'exams',questionBank:'questionBank',grades:'grades',achievements:'achievements',library:'library',payments:'payments',profile:'profile',familyLink:'familyLink',rewards:'rewards',activityLog:'activityLog',studentAffairs:'studentAffairs',deviceControl:'deviceControl',settings:'settings',announcements:'announcements',certificates:'certificates',messages:'messages',notifications:'notifications',dashboard:'learningDashboard'};
+  const platformPageRoutes={community:'community',subjects:'subjects',assignments:'assignments',exams:'exams',questionBank:'questionBank',grades:'grades',attendance:'attendance',schedule:'schedule',reports:'reports',complaints:'complaints',achievements:'achievements',library:'library',payments:'payments',profile:'profile',familyLink:'familyLink',rewards:'rewards',activityLog:'activityLog',studentAffairs:'studentAffairs',deviceControl:'deviceControl',settings:'settings',certificates:'certificates',dashboard:'learningDashboard'};
   platformTabsByRole.parent=platformTabsByRole.parent.filter(item=>item[0]!=='courses');
   for(const name of ['parent','student'])platformTabsByRole[name]=platformTabsByRole[name].filter(item=>item[0]!=='settings');
   const baseShowPage=window.showPage;
@@ -267,8 +267,16 @@
     if(page==='courses'){renderSide();renderPage();window.scrollTo({top:0,behavior:'smooth'});}
     else baseShowPage('courses');
   };
+  window.mkOpenNotifications=function(){
+    if(!current)return;
+    if(!['admin','student','parent'].includes(String(current.role||'').toLowerCase()))return window.forbidden?.();
+    window.mkPlatformTab='notifications';window.mkClosePlatformMenu?.();
+    if(page==='courses'){renderSide();renderPage();window.scrollTo({top:0,behavior:'smooth'});}
+    else baseShowPage('courses');
+  };
   window.mkPlatformHome=function(){window.mkPlatformOpen('courses')};
   window.showPage=function(target){
+    if(target==='notifications')return window.mkOpenNotifications();
     if(target==='courses')return window.mkPlatformOpen('courses');
     if(platformPageRoutes[target])return window.mkPlatformOpen(platformPageRoutes[target]);
     window.mkClosePlatformMenu();
@@ -278,9 +286,9 @@
    window.mkTogglePlatformMenu=function(){const wrap=document.getElementById('mkPlatformMenuWrap'),trigger=document.getElementById('mkPlatformMenuTrigger');if(!wrap)return;const open=!wrap.classList.contains('open');wrap.classList.toggle('open',open);trigger?.setAttribute('aria-expanded',String(open));if(open)requestAnimationFrame(()=>document.querySelector('#mkPlatformMenu button')?.focus());};
    window.mkClosePlatformMenu=function(restoreFocus=false){const wrap=document.getElementById('mkPlatformMenuWrap'),trigger=document.getElementById('mkPlatformMenuTrigger');wrap?.classList.remove('open');trigger?.setAttribute('aria-expanded','false');if(restoreFocus)trigger?.focus();};
   function renderPlatformMenu(tabs,active){
-    const groups=new Map(),management=new Set(['studentAffairs','deviceControl','activityLog','settings']);
+    const groups=new Map(),management=new Set(['studentAffairs','deviceControl','activityLog','settings','attendance','schedule','reports','complaints','subjects']);
     for(const item of tabs){
-      const key=item[0],group=admin()&&(management.has(key)||key==='payments')?'إدارة المنصة':['dashboard','courses','assignments','exams','questionBank','grades','certificates','achievements'].includes(key)?'التعلم والمتابعة':['community','announcements','library','rewards','ai'].includes(key)?'المجتمع والمصادر':'حسابك والتواصل';
+      const key=item[0],group=admin()&&(management.has(key)||key==='payments')?'إدارة المنصة':['dashboard','courses','assignments','exams','questionBank','grades','certificates','achievements'].includes(key)?'التعلم والمتابعة':['community','library','rewards','ai'].includes(key)?'المجتمع والمصادر':'حسابك والتواصل';
       if(!groups.has(group))groups.set(group,[]);groups.get(group).push(item);
     }
     return '<div class="mk-platform-menu-heading">أقسام المنصة</div>'+[...groups].map(([title,items])=>`<section class="mk-platform-menu-group"><div class="mk-platform-menu-group-title">${title}</div>${items.map(([key,label,icon])=>`<button type="button" role="menuitem" class="${active===key?'active':''}" aria-current="${active===key?'page':'false'}" data-mk-click="mkPlatformOpen('${key}')"><span class="mk-menu-icon" aria-hidden="true">${icon}</span><span>${label}</span></button>`).join('')}</section>`).join('');
@@ -347,7 +355,7 @@
   window.pages.settings=function(){if(!admin())return '<div class="card empty">إعدادات الإدارة غير متاحة لهذا الحساب.</div>';return unrestrictedSettingsPage?.()||'';};
   window.pages.courses=function(){
     const tabs=platformTabsByRole[String(current?.role||'').toLowerCase()]||[];
-    const active=tabs.some(item=>item[0]===window.mkPlatformTab)?window.mkPlatformTab:'courses';
+    const active=window.mkPlatformTab==='notifications'&&['admin','student','parent'].includes(String(current?.role||'').toLowerCase())?'notifications':tabs.some(item=>item[0]===window.mkPlatformTab)?window.mkPlatformTab:'courses';
     window.mkPlatformTab=active;
     syncPlatformHeader(tabs,active);
     const panel=active==='courses'?window.mkRenderPlatformCatalog():window.pages[active]?.()||'<div class="card empty">هذا القسم غير متاح.</div>';

@@ -1,6 +1,6 @@
 /* School content is managed by the administration; no teacher account role is used. */
 (function () {
-  const isAdmin = () => String(current?.role || '').toLowerCase() === 'admin' || String(current?.id || '') === 'admin';
+  const isAdmin = () => String(current?.role || '').toLowerCase() === 'admin';
   const baseAssignmentsPage = window.pages.assignments;
   const baseExamsPage = window.pages.exams;
   const baseQuestionBankPage = window.pages.questionBank;
@@ -10,15 +10,7 @@
   const escape = value => window.esc(String(value ?? ''));
   const quote = value => String(value ?? '').replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/[\r\n]/g, ' ');
 
-  window.navItems = function () {
-    const role = String(current?.role || '').toLowerCase();
-    const navigation = {
-      admin: [['dashboard','الرئيسية','⌂'],['students','شؤون الطلبة','🗂️'],['courses','المنصة','🎓'],['community','مجتمع المنصة','💬'],['deviceControl','أجهزة الحسابات','📱'],['subjects','المواد','📚'],['assignments','الواجبات','📝'],['exams','الاختبارات','🧪'],['questionBank','بنك الأسئلة','🧠'],['grades','الدرجات والتقييمات','⭐'],['attendance','الحضور والغياب','🟢'],['schedule','الجدول','🗓️'],['reports','التقارير والتحليلات','📊'],['announcements','الإعلانات','📢'],['complaints','الشكاوى والدعم','🛟'],['certificates','الشهادات','🏅'],['messages','الرسائل','✉️'],['notifications','التنبيهات','🔔'],['payments','المدفوعات','💳'],['settings','الإعدادات','⚙️']],
-      student: [['dashboard','الرئيسية','⌂'],['courses','المنصة','🎓'],['community','مجتمع المنصة','💬'],['assignments','واجباتي','📝'],['exams','اختباراتي','🧪'],['grades','درجاتي','⭐'],['attendance','حضوري','🟢'],['schedule','جدولي','🗓️'],['library','مكتبتي','📖'],['achievements','إنجازاتي','🏆'],['certificates','شهاداتي','🏅'],['complaints','الدعم والشكاوى','🛟'],['ai','MK AI','🤖'],['messages','الرسائل','✉️'],['notifications','التنبيهات','🔔'],['profile','ملفي','👤'],['payments','مدفوعاتي','💳']],
-      parent: [['dashboard','الرئيسية','⌂'],['community','مجتمع المنصة','💬'],['students','أبنائي','👨‍👩‍👧'],['grades','الدرجات والتقييمات','⭐'],['attendance','الحضور والغياب','🟢'],['schedule','جدولي','🗓️'],['assignments','الواجبات','📝'],['complaints','الدعم والشكاوى','🛟'],['messages','الرسائل','✉️'],['notifications','التنبيهات','🔔']]
-    };
-    return navigation[role] || [];
-  };
+  window.navItems = function () { return [['courses','المنصة التعليمية','🎓']]; };
 
   function adminSubjectOptions() {
     return (db.subjects || []).map((subject, index) => ({ subject, teacher: { id: 'admin', name: 'إدارة المنصة' }, index }));

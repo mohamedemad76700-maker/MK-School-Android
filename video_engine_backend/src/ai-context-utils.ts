@@ -4,7 +4,7 @@
  */
 const ALLOWED_TOP_LEVEL = new Set([
   'students', 'teachers', 'subjects', 'grades', 'assignments', 'exams', 'schedule',
-  'lessonLinks', 'library', 'mkLibrary', 'courses', 'announcements', 'attendance',
+  'lessonLinks', 'library', 'mkLibrary', 'courses', 'attendance',
 ]);
 
 const ALLOWED_FIELDS = new Set([
