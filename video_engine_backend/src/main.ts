@@ -265,6 +265,24 @@ function createSmtpTransport() {
   };
 }
 
+async function sendPasswordResetEmail(message: { from: string; to: string; subject: string; text: string; html: string }) {
+  const resendApiKey = process.env.RESEND_API_KEY?.trim();
+  if (resendApiKey) {
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${resendApiKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...message, to: [message.to] }),
+      signal: AbortSignal.timeout(10_000),
+    });
+    if (!response.ok) throw new Error(`Resend email request failed with HTTP ${response.status}`);
+    return;
+  }
+
+  const smtp = createSmtpTransport();
+  if (!smtp) return fail(503, 'خدمة استعادة كلمة المرور غير مهيأة بعد؛ يرجى التواصل مع إدارة المنصة');
+  await smtp.transport.sendMail({ ...message, from: smtp.from });
+}
+
 function passwordResetUrl(token: string): string {
   const base = process.env.APP_BASE_URL?.trim() || FRONTEND_ORIGIN;
   if (!isSafePasswordResetBase(base, {
@@ -790,10 +808,10 @@ app.post('/api/v1/auth/password-reset/request', passwordResetRequestIpLimiter, p
   try {
     const email = str(req.body?.email).trim().toLowerCase();
     if (!email || email.length > 320 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) fail(400, 'أدخل بريدًا إلكترونيًا صحيحًا');
-    const smtp = createSmtpTransport();
-    if (!smtp) return fail(503, 'خدمة استعادة كلمة المرور غير مهيأة بعد؛ يرجى التواصل مع إدارة المنصة');
-    const smtpTransport = smtp.transport;
-    const smtpFrom = smtp.from;
+    const resendFrom = process.env.RESEND_FROM?.trim();
+    const smtp = process.env.RESEND_API_KEY?.trim() ? null : createSmtpTransport();
+    if (process.env.RESEND_API_KEY?.trim() && !resendFrom) return fail(503, 'عنوان الإرسال RESEND_FROM غير مهيأ على الخادم');
+    if (!process.env.RESEND_API_KEY?.trim() && !smtp) return fail(503, 'خدمة استعادة كلمة المرور غير مهيأة بعد؛ يرجى التواصل مع إدارة المنصة');
 
     const account = (await pool.query("SELECT id,email FROM video_users WHERE lower(email)=lower($1) AND active=TRUE LIMIT 1", [email])).rows[0];
     if (account) {
@@ -803,8 +821,8 @@ app.post('/api/v1/auth/password-reset/request', passwordResetRequestIpLimiter, p
       await pool.query('UPDATE password_reset_tokens SET used_at=COALESCE(used_at,now()) WHERE user_id=$1 AND used_at IS NULL', [account.id]);
       await pool.query('INSERT INTO password_reset_tokens(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval \'20 minutes\')', [tokenHash, account.id]);
       try {
-        await smtpTransport.sendMail({
-          from: smtpFrom,
+        await sendPasswordResetEmail({
+          from: resendFrom || smtp!.from,
           to: String(account.email),
           subject: 'إعادة تعيين كلمة مرور منصة MK',
           text: `وصلنا طلب لإعادة تعيين كلمة مرور حسابك في منصة MK. افتح الرابط التالي خلال 20 دقيقة لاختيار كلمة مرور جديدة:\n\n${link}\n\nإذا لم تطلب ذلك، تجاهل هذه الرسالة.`,

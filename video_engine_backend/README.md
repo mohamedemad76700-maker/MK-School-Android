@@ -16,6 +16,9 @@
 5. ابنِ الخادم عبر `npm --prefix video_engine_backend install` ثم `npm --prefix video_engine_backend run build`، وبعدها شغّله من الجذر بـ `node --env-file=.env video_engine_backend/dist/main.js` (Node.js 22+).
 6. افتح `http://localhost:8080` عند التشغيل المحلي. PostgreSQL وRedis لا يتم تثبيتهما أو تشغيلهما تلقائيًا.
 
+### استعادة كلمة المرور بالبريد
+على Render Free استخدم Resend عبر HTTPS بدل SMTP لأن الخطة المجانية تحجب منافذ SMTP. اضبط `RESEND_API_KEY` كمفتاح سري و`RESEND_FROM` كعنوان من نطاق موثّق في Resend. عند غياب `RESEND_API_KEY` يمكن للخادم استخدام SMTP التقليدي عبر `SMTP_HOST` و`SMTP_PORT` و`SMTP_USER` و`SMTP_PASSWORD` و`SMTP_FROM`.
+
 يمكنك من داخل هذا المجلد تشغيل `npm install` ثم `npm run typecheck` ثم `npm run build`. لا ترفع `.env` أو كلمات المرور أو مفاتيح API إلى Git. في تطبيق Android افتح «إعداد اتصال الخادم» قبل تسجيل الدخول، وأدخل عنوان HTTPS الذي يستضيف الـAPI. عنوان الخادم إعداد غير سري، أما `GROQ_API_KEY` فيُضبط كسرّ في بيئة تشغيل الخادم فقط.
 
 ## مسارات API الرئيسية

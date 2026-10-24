@@ -40,6 +40,10 @@ services:
         sync: false
       - key: GROQ_API_KEY
         sync: false
+      - key: RESEND_API_KEY
+        sync: false
+      - key: RESEND_FROM
+        sync: false
 
   - type: keyvalue
     name: mk-school-redis
