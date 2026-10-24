@@ -1,0 +1,2 @@
+ALTER TABLE platform_redemptions
+  ADD COLUMN IF NOT EXISTS delivered BOOLEAN NOT NULL DEFAULT FALSE;

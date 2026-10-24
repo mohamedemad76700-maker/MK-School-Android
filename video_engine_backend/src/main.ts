@@ -1427,7 +1427,15 @@ app.post('/api/v1/exams/start', async (req, res, next) => {
     const remainingSeconds = Math.max(0, Math.ceil((expires.getTime() - Date.now()) / 1000));
     if (!row || row.closed_at || expires.getTime() <= Date.now()) fail(408, 'انتهى وقت الاختبار ولا يمكن استئنافه أو بدء محاولة جديدة');
     await client.query('COMMIT');
-    res.status(inserted.rowCount ? 201 : 200).json({ status: row.retry_pending ? 'RETRY_REQUIRED' : inserted.rowCount ? 'STARTED' : 'RESUMED', exam_id: examId, started_at: row.started_at, expires_at: expires.toISOString(), remaining_seconds: remainingSeconds, ...(row.retry_pending ? { retry_pending: true, review_answers: row.retry_answers, wrong_question_indexes: row.retry_wrong_indexes } : {}) });
+    res.status(inserted.rowCount ? 201 : 200).json({
+      status: row.retry_pending ? 'RETRY_REQUIRED' : inserted.rowCount ? 'STARTED' : 'RESUMED',
+      exam_id: examId, title: str(assigned.exam.title), subject: str(assigned.exam.subject),
+      started_at: row.started_at, expires_at: expires.toISOString(), remaining_seconds: remainingSeconds,
+      duration_minutes: minutes, challenge_limit: assigned.challengeLimit,
+      // Questions are delivered only after eligibility and completion checks; answer keys stay on the server.
+      questions: assigned.questions.map(publicExamQuestionForStudent),
+      ...(row.retry_pending ? { retry_pending: true, review_answers: row.retry_answers, wrong_question_indexes: row.retry_wrong_indexes } : {})
+    });
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); next(e); } finally { client.release(); }
 });
 
@@ -1877,12 +1885,38 @@ app.post('/api/v1/admin/platform/rewards/lookup-code', async (req, res, next) =>
     const claims = await admin(req), code = str(req.body?.code).replace(/\s+/g, '').toUpperCase();
     if (!/^[A-F0-9]{32}$/.test(code)) fail(400, 'صيغة كود الاستلام غير صحيحة');
     const hash = createHash('sha256').update(code).digest('hex');
-    const result = await pool.query(`SELECT pr.id AS redemption_id,pr.status,pr.points_cost,pr.created_at,pr.student_id,vr.title AS reward_title
-      FROM platform_redemptions pr JOIN platform_rewards vr ON vr.id=pr.reward_id WHERE pr.claim_code_hash=$1`, [hash]);
+    const result = await pool.query(`SELECT pr.id AS redemption_id,pr.status,pr.points_cost,pr.created_at,pr.student_id,vr.title AS reward_title,
+        pr.delivered,vu.parent_phone AS registered_phone,profile.profile_data
+      FROM platform_redemptions pr JOIN platform_rewards vr ON vr.id=pr.reward_id
+      LEFT JOIN video_users vu ON vu.id=pr.student_id
+      LEFT JOIN video_user_profiles profile ON profile.user_id=pr.student_id
+      WHERE pr.claim_code_hash=$1`, [hash]);
     if (!result.rowCount) fail(404, 'الكود غير صحيح أو غير موجود');
-    const item = result.rows[0], profile = await pool.query('SELECT profile_data FROM video_user_profiles WHERE user_id=$1', [item.student_id]);
+    const item = result.rows[0], profileData = item.profile_data || {};
     await audit(claims.sub, 'platform_reward_code_lookup', `redemption=${item.redemption_id}`);
-    res.json({ status: 'OK', redemption_id: String(item.redemption_id), reward: item.reward_title, student_id: item.student_id, student_name: str(profile.rows[0]?.profile_data?.name || ''), points: Number(item.points_cost), redemption_status: item.status, redeemed_at: item.created_at });
+    res.json({ status: 'OK', redemption_id: String(item.redemption_id), reward: item.reward_title, student_id: item.student_id,
+      student_name: str(profileData.name || ''), student_phone: str(profileData.phone || profileData.studentPhone || profileData.parentPhone || item.registered_phone || ''),
+      points: Number(item.points_cost), redemption_status: item.status, code_active: item.status !== 'revoked', delivered: item.delivered === true, redeemed_at: item.created_at });
+  } catch (e) { next(e); }
+});
+app.post('/api/v1/admin/platform/rewards/revoke-code', async (req, res, next) => {
+  try {
+    const claims = await admin(req), id = Number(req.body?.redemption_id);
+    if (!Number.isSafeInteger(id) || id < 1) fail(400, 'رقم عملية الاستبدال غير صالح');
+    const result = await pool.query("UPDATE platform_redemptions SET status='revoked',claim_code_hash=NULL WHERE id=$1 AND claim_code_hash IS NOT NULL AND status<>'revoked' RETURNING id", [id]);
+    if (!result.rowCount) fail(409, 'الكود غير نشط أو سبق إلغاؤه');
+    await audit(claims.sub, 'platform_reward_code_revoked', `redemption=${id}`);
+    res.json({ status: 'OK', redemption_id: String(id), code_active: false });
+  } catch (e) { next(e); }
+});
+app.post('/api/v1/admin/platform/rewards/delivery-status', async (req, res, next) => {
+  try {
+    const claims = await admin(req), id = Number(req.body?.redemption_id), delivered = req.body?.delivered;
+    if (!Number.isSafeInteger(id) || id < 1 || typeof delivered !== 'boolean') fail(400, 'بيانات حالة التسليم غير صالحة');
+    const result = await pool.query('UPDATE platform_redemptions SET delivered=$2 WHERE id=$1 RETURNING id', [id, delivered]);
+    if (!result.rowCount) fail(404, 'عملية الاستبدال غير موجودة');
+    await audit(claims.sub, 'platform_reward_delivery_status', `redemption=${id};delivered=${delivered}`);
+    res.json({ status: 'OK', redemption_id: String(id), delivered });
   } catch (e) { next(e); }
 });
 

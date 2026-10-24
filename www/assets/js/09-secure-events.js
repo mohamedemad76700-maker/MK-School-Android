@@ -137,6 +137,8 @@
   "mkRemoveLessonRow",
   "mkResetDevice",
   "mkRetryCourseProcessingById",
+  "mkReprocessPublishedVideo",
+  "mkRewardCodeAction",
   "mkSaveCourseAccess",
   "mkSaveCourseExam",
   "mkSaveCoursePoints",
@@ -160,6 +162,7 @@
   "mkStudentFullProfile",
   "mkStudentStatusModal",
   "mkSubmitVodafonePayment",
+  "mkSubmitCourseExam",
   "mkSyncUsersAndNotify",
   "mkToggleCoursePackageFields",
   "mkTogglePlatformMenu",
@@ -316,7 +319,7 @@
               event.preventDefault(); event.stopPropagation(); return;
             }
           }
-          if (type === 'click' && element.hasAttribute?.('data-mk-close-on-backdrop') && event.target === element) {
+          if (type === 'click' && element.hasAttribute?.('data-mk-close-on-backdrop') && element.getAttribute('data-mk-close-on-backdrop') !== 'false' && event.target === element) {
             root.closeModal?.(); return;
           }
         }

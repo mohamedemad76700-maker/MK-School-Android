@@ -164,6 +164,7 @@ function openModal(html){
   (first||box).focus();
 }
 function closeModal(){
+  if(window.__mkActiveExam){toast('سلّم الامتحان قبل إغلاقه؛ الخروج من المنصة ينهي المحاولة دون درجة.');return;}
   const modal=document.getElementById('modal');if(!modal)return;
   modal.classList.remove('show');modal.setAttribute('aria-hidden','true');
   if(__mkModalReturnFocus?.isConnected)__mkModalReturnFocus.focus();
