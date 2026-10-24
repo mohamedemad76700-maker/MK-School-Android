@@ -278,6 +278,76 @@ studentDetails=function(id){const s=db.students.find(x=>String(x.id)===String(id
 /* Ensure old records become compatible with the stronger relationship model. */
 
 
+function finishLogin(u,auto=false){
+  if(!u)return false;
+  if(u.active===false){if(!auto)toast('الحساب متوقف');return false}
+  const role=String(u.role||'').toLowerCase();
+  if(!['admin','parent','student'].includes(role)){if(!auto)toast('نوع الحساب غير مدعوم في المنصة.');return false}
+  current={id:String(u.id),role};
+  __mkAuthReady=false;
+  audit('login',`${auto?'دخول مباشر':'تسجيل دخول'} ${role}`);
+  document.getElementById('auth').style.display='none';
+  document.getElementById('app').style.display='block';
+  document.body.classList.add('mk-platform-only');
+  renderSide();showPage(role==='parent'?'dashboard':'courses');
+  if(!auto)toast('مرحبًا بك في منصة MK التعليمية');
+  return true;
+}
+
+let __mkLoginPending=false;
+function mkTogglePassword(id){
+  const input=document.getElementById(String(id||''));if(!input)return;
+  const button=[...document.querySelectorAll('[data-mk-password-toggle]')].find(item=>item.getAttribute('data-mk-password-toggle')===input.id),visible=input.type==='password';
+  input.type=visible?'text':'password';
+  if(button){button.setAttribute('aria-pressed',String(visible));button.setAttribute('aria-label',visible?'إخفاء كلمة المرور':'إظهار كلمة المرور');button.title=visible?'إخفاء كلمة المرور':'إظهار كلمة المرور';button.innerHTML=visible?'<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/><path d="m3 3 18 18"/></svg>':'<svg aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/></svg>';}
+  input.focus();
+}
+
+async function login(e){
+  if(e)e.preventDefault();if(__mkLoginPending)return false;__mkLoginPending=true;
+  const submitButton=document.querySelector('#loginForm button[type="submit"]');if(submitButton)submitButton.disabled=true;
+  try{
+    const identifier=String(document.getElementById('loginEmail')?.value||'').trim(),pass=String(document.getElementById('loginPass')?.value||'');
+    if(!identifier||!pass){toast('اكتب البريد أو اسم المستخدم وكلمة المرور');return false;}
+    if(!window.mkVideoEngineConfigured?.()){toast('خادم المنصة غير متاح حاليًا. حاول مرة أخرى بعد تشغيله.');return false;}
+    const probe={id:identifier,email:identifier,role:'student',parentPhone:String(document.getElementById('loginParentPhone')?.value||'').trim()};
+    if(!await window.mkBackendAuthLogin?.(probe,pass,document.getElementById('rememberLogin')?.checked!==false)){toast(window.mkBackendAuthError||'تعذر تسجيل الدخول. تحقق من بياناتك ثم أعد المحاولة.');return false;}
+    const dataId=String(window.mkBackendLastUserId||identifier),dataRole=String(window.mkBackendLastRole||'');
+    if(!finishLogin({id:dataId,role:dataRole,name:dataId,active:true},false))return false;
+    const pulled=await window.mkBackendPullPlatform?.();
+    if(!pulled){const reason=String(window.__mkBackendLastError||'تعذر تحميل بيانات المنصة من الخادم.');current=null;__mkAuthReady=false;__mkServerSnapshot=null;__mkServerRevision=0;window.__mkServerAllowedKeys=new Set();mkRuntimeRemoveItem('mk_video_jwt');document.body.classList.remove('mk-platform-only','mk-platform-active');document.getElementById('app').style.display='none';document.getElementById('auth').style.display='grid';toast(`لم يكتمل تحميل بيانات المنصة: ${reason}`);return false;}
+    const live=[...(db.students||[]),...(db.parents||[]),...Object.values(db.users||{})].find(x=>String(x.id)===dataId);
+    if(live?.active===false){await logout();toast('الحساب متوقف أو ينتظر اعتماد إدارة المنصة.');return false;}
+    if(live)current={...live,id:dataId,role:dataRole};
+    __mkAuthReady=true;document.body.classList.add('mk-platform-only');renderSide();showPage(current.role==='parent'?'dashboard':'courses');window.mkStartServerStateCoordinator?.();
+    toast('مرحبًا بك في منصة MK التعليمية');return true;
+  }catch(err){console.error('MK Platform login error:',err);toast('حدث خطأ أثناء تسجيل الدخول. أعد المحاولة.');return false;}
+  finally{__mkLoginPending=false;if(submitButton?.isConnected)submitButton.disabled=false;}
+}
+
+async function autoLoginLastAccount(){
+  const cfg=window.mkVideoCfg?.()||{};if(!cfg.url||!window.mkVideoEngineConfigured?.())return false;
+  try{
+    const response=await fetch(cfg.url+'/api/v1/auth/session',{credentials:'include',cache:'no-store'});if(!response.ok)return false;
+    const data=await response.json();if(!data?.token||!data?.user_id||!data?.role)return false;
+    mkRuntimeSetItem('mk_video_jwt',data.token);window.mkBackendLastUserId=String(data.user_id);window.mkBackendLastRole=String(data.role);
+    if(!finishLogin({id:String(data.user_id),role:String(data.role),name:String(data.user_id),active:true},true))return false;
+    const pulled=await window.mkBackendPullPlatform?.();if(!pulled)throw new Error(window.__mkBackendLastError||'تعذر تحميل بيانات المنصة');
+    const id=String(data.user_id),live=[...(db.students||[]),...(db.parents||[]),...Object.values(db.users||{})].find(x=>String(x.id)===id);
+    if(live?.active===false)throw new Error('الحساب متوقف أو ينتظر اعتماد الإدارة');if(live)current={...live,id,role:String(data.role)};
+    __mkAuthReady=true;document.body.classList.add('mk-platform-only');renderSide();showPage(current.role==='parent'?'dashboard':'courses');window.mkStartServerStateCoordinator?.();return true;
+  }catch(error){mkRuntimeRemoveItem('mk_video_jwt');current=null;__mkAuthReady=false;document.body.classList.remove('mk-platform-only','mk-platform-active');document.getElementById('app').style.display='none';document.getElementById('auth').style.display='grid';console.warn('MK session restore failed',error?.message||error);return false;}
+}
+
+async function logout(){
+  const cfg=window.mkVideoCfg?.()||{},token=mkRuntimeGetItem('mk_video_jwt');
+  if(cfg.url&&token)try{await fetch(cfg.url+'/api/v1/auth/logout',{method:'POST',credentials:'include',headers:{Authorization:'Bearer '+token}})}catch{}
+  current=null;__mkAuthReady=false;__mkServerSnapshot=null;__mkServerRevision=0;__mkAccountSignature='';window.__mkServerAllowedKeys=new Set();
+  mkRuntimeRemoveItem('mk_video_jwt');mkRuntimeRemoveItem('mk_video_media_tokens');document.body.classList.remove('mk-platform-only','mk-platform-active');
+  document.getElementById('app').style.display='none';document.getElementById('auth').style.display='grid';
+  if(document.getElementById('loginEmail'))document.getElementById('loginEmail').value='';if(document.getElementById('loginPass'))document.getElementById('loginPass').value='';
+}
+
 document.getElementById('loginForm').addEventListener('submit',login);
 
 if(mkRuntimeGetItem('mk_theme')==='dark' && !document.body.classList.contains('dark'))toggleTheme();
