@@ -1,11 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hasApprovedCoursePayment, hasCourseEnrollmentAccess } from '../src/course-entitlement-utils.js';
+import { hasApprovedCoursePayment, hasCourseEnrollmentAccess, isPaidCourse } from '../src/course-entitlement-utils.js';
 
 const approved = [{ courseId: 'paid-1', studentId: 'student-1', status: 'paid' }];
 
 test('free courses open to their enrolled student without a payment record', () => {
   assert.equal(hasCourseEnrollmentAccess({ id: 'free-1', type: 'free', enrollments: ['student-1'] }, 'student-1', []), true);
+  assert.equal(isPaidCourse({ id: 'legacy-free', price: 0 }), false);
+  assert.equal(hasCourseEnrollmentAccess({ id: 'legacy-free', price: 0, enrollments: ['student-1'] }, 'student-1', []), true);
 });
 
 test('paid courses stay locked unless the same student has an approved payment', () => {
@@ -14,6 +16,7 @@ test('paid courses stay locked unless the same student has an approved payment',
   assert.equal(hasCourseEnrollmentAccess(course, 'student-1', [{ ...approved[0], status: 'pending' }]), false);
   assert.equal(hasCourseEnrollmentAccess(course, 'student-2', approved), false);
   assert.equal(hasCourseEnrollmentAccess(course, 'student-1', approved), true);
+  assert.equal(isPaidCourse({ id: 'legacy-paid', price: 100 }), true);
 });
 
 test('administrator course grants unlock paid courses and administrator revocation overrides payment', () => {

@@ -18,7 +18,7 @@ import { summarizeLearningStreak } from './learning-streak-utils.js';
 import { consumeVideoView } from './video-view-utils.js';
 import { exceedsAiDailyLimit, filterAiCoursesForEnrolledStudents, minimizeAiContext } from './ai-context-utils.js';
 import { applyPlatformStateChanges } from './platform-state-utils.js';
-import { hasCourseEnrollmentAccess } from './course-entitlement-utils.js';
+import { hasCourseEnrollmentAccess, isPaidCourse } from './course-entitlement-utils.js';
 import { canReadPublishedLibraryFile, canRegisterDeviceSession, requiresDeviceRegistration, teacherOwnsCourse } from './library-access-utils.js';
 import { isSessionVersionCurrent } from './auth-utils.js';
 import { advanceWatchProgress, courseLessonsComplete, lessonReleaseIsOpen, lessonReleaseWeek, watchedEnough } from './course-release-utils.js';
@@ -642,9 +642,20 @@ async function getCourseEnrollment(db: StateQueryable, studentId: string, course
   const platformState = state || await readPlatformState(db);
   const course = (Array.isArray(platformState.courses) ? platformState.courses : []).find((item: any) => String(item?.id) === courseId);
   if (!course || course.active === false) fail(404, 'الدورة غير متاحة');
-  const enrollment = (await db.query('SELECT enrolled_at FROM course_enrollments WHERE course_id=$1 AND student_id=$2 AND active=TRUE', [courseId, studentId])).rows[0];
   const listed = hasCourseEnrollmentAccess(course, studentId, platformState.payments);
-  if (!enrollment || !listed) fail(403, 'يجب الاشتراك في الدورة واعتماد دفعها أولًا');
+  if (!listed) fail(403, 'يجب الاشتراك في الدورة واعتماد دفعها أولًا');
+  let enrollment = (await db.query('SELECT enrolled_at FROM course_enrollments WHERE course_id=$1 AND student_id=$2 AND active=TRUE', [courseId, studentId])).rows[0];
+  // Canonical platform state can already grant access while an older or interrupted
+  // sync left the indexed enrollment row inactive/missing. Restore that index only
+  // after the exact student's current entitlement has been verified.
+  if (!enrollment) {
+    const savedDate = course.enrolledAtByStudent && typeof course.enrolledAtByStudent === 'object' ? course.enrolledAtByStudent[studentId] : null;
+    const requestedDate = new Date(str(savedDate));
+    const enrolledAt = Number.isFinite(requestedDate.getTime()) ? requestedDate : new Date();
+    enrollment = (await db.query(`INSERT INTO course_enrollments(course_id,student_id,active,enrolled_at) VALUES($1,$2,TRUE,$3)
+      ON CONFLICT(course_id,student_id) DO UPDATE SET active=TRUE,enrolled_at=CASE WHEN course_enrollments.active THEN course_enrollments.enrolled_at ELSE EXCLUDED.enrolled_at END,updated_at=now()
+      RETURNING enrolled_at`, [courseId, studentId, enrolledAt])).rows[0];
+  }
   return { course, enrolledAt: enrollment.enrolled_at instanceof Date ? enrollment.enrolled_at : new Date(enrollment.enrolled_at) };
 }
 async function requireReleasedCourseLesson(db: StateQueryable, studentId: string, courseId: string, lessonIndex: number, state?: Record<string, any>): Promise<{ course: any; lesson: any; enrolledAt: Date }> {
@@ -700,17 +711,31 @@ async function trustedCourseDuration(lesson: any): Promise<number | null> {
   }
   return parseCourseDuration(lesson?.duration);
 }
-async function requireReleasedCourseVideo(db: StateQueryable, studentId: string, videoId: string): Promise<void> {
+async function requireReleasedCourseVideo(db: StateQueryable, studentId: string, videoId: string, repairAccess = false): Promise<void> {
   const relations = await db.query('SELECT course_id FROM course_videos WHERE video_id=$1', [videoId]);
-  if (!relations.rowCount) return;
+  if (!relations.rowCount && !repairAccess) return;
   const state = await readPlatformState(db);
-  for (const relation of relations.rows) {
-    const courseId = String(relation.course_id);
+  const courseIds = new Set(relations.rows.map((relation: any) => String(relation.course_id)));
+  if (repairAccess) {
+    for (const course of Array.isArray(state.courses) ? state.courses : []) {
+      const lessons = Array.isArray(course?.lessons) ? course.lessons : [];
+      if (lessons.some((lesson: any, index: number) => courseVideoAccessId(course, lesson, index) === videoId)) courseIds.add(String(course.id));
+    }
+  }
+  for (const courseId of courseIds) {
     const course = (Array.isArray(state.courses) ? state.courses : []).find((item: any) => String(item?.id) === courseId);
     if (!course) continue;
     const lessons = Array.isArray(course.lessons) ? course.lessons : [];
     const index = lessons.findIndex((lesson: any, i: number) => courseVideoAccessId(course, lesson, i) === videoId);
-    if (index >= 0) await requireReleasedCourseLesson(db, studentId, courseId, index, state);
+    if (index >= 0) {
+      await requireReleasedCourseLesson(db, studentId, courseId, index, state);
+      if (repairAccess) {
+        const kind = isPaidCourse(course) ? 'paid' : 'free';
+        await db.query('INSERT INTO course_catalog(course_id,kind,active) VALUES($1,$2,TRUE) ON CONFLICT(course_id) DO UPDATE SET kind=EXCLUDED.kind,active=TRUE,updated_at=now()', [courseId, kind]);
+        await db.query('INSERT INTO course_videos(course_id,video_id) VALUES($1,$2) ON CONFLICT DO NOTHING', [courseId, videoId]);
+        await db.query('INSERT INTO video_access(student_id,video_id,active) VALUES($1,$2,TRUE) ON CONFLICT(student_id,video_id) DO UPDATE SET active=TRUE,updated_at=now()', [studentId, videoId]);
+      }
+    }
   }
 }
 function recordEntries(key: string, value: any): Array<{key:string;value:any;ordinal:number}> {
@@ -1357,9 +1382,8 @@ async function loadAssignedExam(client: PoolClient, studentId: string, examId: s
   if (courseId) {
     const course = (Array.isArray(state.courses) ? state.courses : []).find((item: any) => String(item?.id) === courseId);
     if (!course || course.active === false) fail(403, 'الدورة المرتبطة بالاختبار غير متاحة');
-    const enrolledInState = hasCourseEnrollmentAccess(course, studentId, state.payments);
-    const enrollment = await client.query('SELECT 1 FROM course_enrollments WHERE course_id=$1 AND student_id=$2 AND active=TRUE', [courseId, studentId]);
-    if (!enrolledInState || !enrollment.rowCount) fail(403, 'يجب الاشتراك في الدورة واعتماد دفعها أولًا لبدء امتحانها');
+    // This also repairs an outdated SQL enrollment index after verifying the
+    // student's canonical free-course, approved-payment, or admin-grant access.
     await requireCourseVideosComplete(client, studentId, courseId, state);
   }
   const teacherId = str(exam.teacher || exam.teacherId).trim();
@@ -1638,14 +1662,13 @@ app.post('/api/v1/courses/enroll-free', async (req, res, next) => {
     if (claims.role !== 'student') fail(403, 'student account required');
     const id = str(req.body?.course_id).trim();
     await client.query('BEGIN');
-    const catalog = await client.query('SELECT kind FROM course_catalog WHERE course_id=$1 AND active=TRUE FOR SHARE', [id]);
-    if (catalog.rows[0]?.kind !== 'free') fail(403, 'course is not a free course');
     await client.query("INSERT INTO platform_state(id,state,updated_at,revision,updated_by) VALUES(1,'{}'::jsonb,now(),0,$1) ON CONFLICT(id) DO NOTHING", [claims.sub]);
     await client.query('SELECT revision FROM platform_state WHERE id=1 FOR UPDATE');
     const originalState = await readPlatformState(client), state = structuredClone(originalState);
     const course = (Array.isArray(state.courses) ? state.courses : []).find((item:any) => String(item?.id) === id);
     if (!course || course.active === false) fail(404, 'course not found');
-    if (String(course.type ?? course.kind ?? 'free') === 'paid') fail(403, 'course is not free');
+    if (isPaidCourse(course)) fail(403, 'الدورة مدفوعة ولا يمكن التسجيل فيها مجانًا');
+    if (Array.isArray(course.adminEnrollmentRevocations) && course.adminEnrollmentRevocations.map(String).includes(claims.sub)) fail(403, 'ألغت الإدارة إتاحة هذه الدورة لهذا الحساب');
     const oldEnrollment = (await client.query('SELECT active,enrolled_at FROM course_enrollments WHERE course_id=$1 AND student_id=$2 FOR UPDATE', [id, claims.sub])).rows[0];
     const enrolledAt = oldEnrollment?.active ? new Date(oldEnrollment.enrolled_at) : new Date();
     const currentEnrollments = Array.isArray(course.enrollments) ? course.enrollments.map(String) : [];
@@ -2285,7 +2308,7 @@ app.post('/api/v1/video/process', async (req,res,next) => {
   } catch(e) { next(e); }
 });
 app.post('/api/v1/video/view', async (req,res,next) => {
-  const client = await pool.connect(); try { const token = str(req.body?.token), videoId = str(req.body?.video_id).trim(); if(!token || !videoId) fail(400,'token and video_id are required'); const claims=verifyToken(token); await requireDeviceSession(claims); if(claims.role!=='student') fail(403,'only students can consume course videos'); await requireVideoAccess(claims.sub,videoId); await requireReleasedCourseVideo(pool,claims.sub,videoId); if(!videoId.startsWith('external_')) { const playlist=await stat(path.join(MEDIA_ROOT,'hls',safeId(videoId),'playlist.m3u8')).catch(()=>null); if(!playlist?.isFile()) fail(409,'الفيديو لم يكتمل تحويله على الخادم بعد؛ لم يتم خصم مشاهدة.'); } await client.query('BEGIN'); await client.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',[claims.sub,videoId]); const found=await client.query('SELECT view_count FROM student_video_views WHERE student_id=$1 AND video_id=$2 FOR UPDATE',[claims.sub,videoId]); const currentBase=Number(found.rows[0]?.view_count || 0), grant=(await client.query('SELECT granted_views,used_views FROM student_video_view_grants WHERE student_id=$1 AND video_id=$2 FOR UPDATE',[claims.sub,videoId])).rows[0], allocation=consumeVideoView(currentBase,Number(grant?.granted_views || 0),Number(grant?.used_views || 0),MAX_VIEWS); if(allocation===null) throw new HttpError(403,'انتهت المشاهدات المتاحة لهذا الفيديو'); await client.query('INSERT INTO student_video_views(student_id,video_id,view_count) VALUES($1,$2,$3) ON CONFLICT(student_id,video_id) DO UPDATE SET view_count=EXCLUDED.view_count',[claims.sub,videoId,allocation.baseCount]); if(allocation.usedGrant) await client.query('UPDATE student_video_view_grants SET used_views=$3,updated_at=now() WHERE student_id=$1 AND video_id=$2',[claims.sub,videoId,allocation.usedExtra]); await client.query('COMMIT'); const mediaToken=tokenFor({sub:claims.sub,role:'student',device:claims.device,session_version:claims.session_version ?? 1,video_id:videoId},MEDIA_TOKEN_TTL_SECONDS); res.json({status:'AUTHORIZED',license_key:mediaToken,remaining_views:allocation.remaining,message:`authorized; view ${allocation.totalCount} with ${allocation.remaining} remaining`}); }
+  const client = await pool.connect(); try { const token = str(req.body?.token), videoId = str(req.body?.video_id).trim(); if(!token || !videoId) fail(400,'token and video_id are required'); const claims=verifyToken(token); await requireDeviceSession(claims); if(claims.role!=='student') fail(403,'only students can consume course videos'); await requireReleasedCourseVideo(pool,claims.sub,videoId,true); await requireVideoAccess(claims.sub,videoId); if(!videoId.startsWith('external_')) { const playlist=await stat(path.join(MEDIA_ROOT,'hls',safeId(videoId),'playlist.m3u8')).catch(()=>null); if(!playlist?.isFile()) fail(409,'الفيديو لم يكتمل تحويله على الخادم بعد؛ لم يتم خصم مشاهدة.'); } await client.query('BEGIN'); await client.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',[claims.sub,videoId]); const found=await client.query('SELECT view_count FROM student_video_views WHERE student_id=$1 AND video_id=$2 FOR UPDATE',[claims.sub,videoId]); const currentBase=Number(found.rows[0]?.view_count || 0), grant=(await client.query('SELECT granted_views,used_views FROM student_video_view_grants WHERE student_id=$1 AND video_id=$2 FOR UPDATE',[claims.sub,videoId])).rows[0], allocation=consumeVideoView(currentBase,Number(grant?.granted_views || 0),Number(grant?.used_views||0),MAX_VIEWS); if(allocation===null) throw new HttpError(403,'انتهت المشاهدات المتاحة لهذا الفيديو'); await client.query('INSERT INTO student_video_views(student_id,video_id,view_count) VALUES($1,$2,$3) ON CONFLICT(student_id,video_id) DO UPDATE SET view_count=EXCLUDED.view_count',[claims.sub,videoId,allocation.baseCount]); if(allocation.usedGrant) await client.query('UPDATE student_video_view_grants SET used_views=$3,updated_at=now() WHERE student_id=$1 AND video_id=$2',[claims.sub,videoId,allocation.usedExtra]); await client.query('COMMIT'); const mediaToken=tokenFor({sub:claims.sub,role:'student',device:claims.device,session_version:claims.session_version ?? 1,video_id:videoId},MEDIA_TOKEN_TTL_SECONDS); res.json({status:'AUTHORIZED',license_key:mediaToken,remaining_views:allocation.remaining,message:`authorized; view ${allocation.totalCount} with ${allocation.remaining} remaining`}); }
   catch(e) { await client.query('ROLLBACK').catch(()=>{}); next(e); } finally { client.release(); }
 });
 app.post('/api/v1/admin/video/preview-token', async (req,res,next) => {
@@ -2304,7 +2327,7 @@ app.post('/api/v1/drm/license', async (req,res,next) => {
     if(!token||fingerprint.length<16||fingerprint.length>256||!videoId) fail(400,'token, valid device_fingerprint and video_id are required');
     const claims=verifyToken(token); if(claims.role!=='student') fail(403,'video access is limited to students');
     const deviceHash=hashDevice(fingerprint); if(claims.device!==deviceHash) fail(409,'device fingerprint does not match this login session');
-    await requireDeviceSession(claims); await requireVideoAccess(claims.sub,videoId); await requireReleasedCourseVideo(pool,claims.sub,videoId);
+    await requireDeviceSession(claims); await requireReleasedCourseVideo(pool,claims.sub,videoId,true); await requireVideoAccess(claims.sub,videoId);
     const key=`rate:license:${deviceHash}`; const count=await redis.incr(key); if(count===1) await redis.expire(key,60); if(count>10) fail(429,'too many requests');
     const sessionKey=`session:${claims.sub}`; const existing=await redis.get(sessionKey); if(existing && existing!==deviceHash) fail(409,'student is already active on another device'); await redis.set(sessionKey,deviceHash,{EX:1800});
     const client=await pool.connect();

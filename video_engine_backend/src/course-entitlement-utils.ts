@@ -17,6 +17,13 @@ export function hasApprovedCoursePayment(payments: unknown, studentId: string, c
   );
 }
 
+export function isPaidCourse(course: any): boolean {
+  const kind = String(course?.type ?? course?.kind ?? '').trim().toLowerCase();
+  if (kind === 'paid') return true;
+  if (kind === 'free') return false;
+  return Number(course?.price) > 0;
+}
+
 /** A paid course needs both an active enrollment and an administrator-approved order. */
 export function hasCourseEnrollmentAccess(course: any, studentId: string, payments: unknown): boolean {
   if (Array.isArray(course?.adminEnrollmentRevocations)
@@ -26,6 +33,6 @@ export function hasCourseEnrollmentAccess(course: any, studentId: string, paymen
   if (!enrolled) return false;
   if (Array.isArray(course?.adminEnrollmentGrants)
     && course.adminEnrollmentGrants.some((id: unknown) => String(id) === studentId)) return true;
-  if (String(course?.type ?? course?.kind ?? 'free') !== 'paid') return true;
+  if (!isPaidCourse(course)) return true;
   return hasApprovedCoursePayment(payments, studentId, String(course?.id ?? ''));
 }
