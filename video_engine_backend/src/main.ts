@@ -13,11 +13,12 @@ import { createReadStream } from 'node:fs';
 import { mkdir, readFile, readdir, realpath, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { normalizeExamQuestion, normalizeExamChallengeLimit, publicExamQuestionForStudent, gradeExamAnswers, normalizeSubmittedExamAnswers, incorrectExamQuestionIndexes, validateExamRetryAnswers, buildExamAnswerReview, isCourseExamEnrolled } from './exam-utils.js';
+import { normalizeExamQuestion, normalizeExamChallengeLimit, publicExamQuestionForStudent, gradeExamAnswers, normalizeSubmittedExamAnswers, incorrectExamQuestionIndexes, validateExamRetryAnswers, buildExamAnswerReview } from './exam-utils.js';
 import { summarizeLearningStreak } from './learning-streak-utils.js';
 import { nextVideoViewCount } from './video-view-utils.js';
 import { exceedsAiDailyLimit, filterAiCoursesForEnrolledStudents, minimizeAiContext } from './ai-context-utils.js';
 import { applyPlatformStateChanges } from './platform-state-utils.js';
+import { hasCourseEnrollmentAccess } from './course-entitlement-utils.js';
 import { canReadPublishedLibraryFile, canRegisterDeviceSession, requiresDeviceRegistration, teacherOwnsCourse } from './library-access-utils.js';
 import { isSessionVersionCurrent } from './auth-utils.js';
 import { advanceWatchProgress, courseLessonsComplete, lessonReleaseIsOpen, lessonReleaseWeek, watchedEnough } from './course-release-utils.js';
@@ -421,7 +422,7 @@ function filterState(raw: any, claims: Claims, parentIds: string[] | null = null
         if (x?.courseId) {
           const course = (Array.isArray(state.courses) ? state.courses : []).find((item: any) => String(item?.id) === String(x.courseId));
           const eligibleIds = claims.role === 'student' ? [id] : linkedIds;
-          if (!course || !eligibleIds.some(studentId => isCourseExamEnrolled(course, studentId))) return false;
+          if (!course || !eligibleIds.some(studentId => hasCourseEnrollmentAccess(course, studentId, state.payments))) return false;
         }
       }
       if ((claims.role === 'student' || claims.role === 'parent') && key === 'assignments') {
@@ -439,11 +440,11 @@ function filterState(raw: any, claims: Claims, parentIds: string[] | null = null
       if (key === 'courses' && (claims.role === 'student' || claims.role === 'parent') && Array.isArray(copy.lessons)) {
         const dates = copy.enrolledAtByStudent && typeof copy.enrolledAtByStudent === 'object' ? copy.enrolledAtByStudent : {};
         const eligibleIds = claims.role === 'student' ? [id] : linkedIds;
+        copy.enrollments = (Array.isArray(copy.enrollments) ? copy.enrollments : []).filter((studentId: any) => hasCourseEnrollmentAccess(x, String(studentId), state.payments));
         copy.lessons = copy.lessons.map((lesson: any, index: number) => {
-          const open = eligibleIds.some(studentId => {
-            if (!Array.isArray(x?.enrollments) || !x.enrollments.map(String).includes(studentId)) return false;
-            return lessonReleaseIsOpen(lesson, x, dates[studentId]);
-          });
+          const enrolled = eligibleIds.some(studentId => hasCourseEnrollmentAccess(x, studentId, state.payments));
+          const open = eligibleIds.some(studentId => hasCourseEnrollmentAccess(x, studentId, state.payments)
+            && lessonReleaseIsOpen(lesson, x, dates[studentId]));
           const releaseAt = typeof lesson?.releaseAt === 'string' ? lesson.releaseAt : '';
           const releaseWeek = lessonReleaseWeek(lesson);
           const label = releaseAt
@@ -451,7 +452,7 @@ function filterState(raw: any, claims: Claims, parentIds: string[] | null = null
             : Number.isSafeInteger(releaseWeek) && Number(releaseWeek) >= 1
               ? `محتوى الأسبوع ${Number(releaseWeek)} متاح لاحقًا`
               : 'محتوى هذا الدرس متاح لاحقًا';
-          return open ? lesson : { id: lesson?.id || `locked_${index}`, title: label, releaseAt, releaseWeek: Number.isSafeInteger(releaseWeek) && Number(releaseWeek) >= 1 ? Number(releaseWeek) : 1, videoRef: '', videoUrl: '', description: '', duration: '', locked: true };
+          return open ? lesson : { id: lesson?.id || `locked_${index}`, title: label, releaseAt, releaseWeek: Number.isSafeInteger(releaseWeek) && Number(releaseWeek) >= 1 ? Number(releaseWeek) : 1, videoRef: '', videoUrl: '', description: '', duration: '', locked: true, lockReason: enrolled ? 'release_schedule' : 'enrollment_required' };
         });
         delete copy.enrolledAtByStudent;
       }
@@ -635,8 +636,8 @@ async function getCourseEnrollment(db: StateQueryable, studentId: string, course
   const course = (Array.isArray(platformState.courses) ? platformState.courses : []).find((item: any) => String(item?.id) === courseId);
   if (!course || course.active === false) fail(404, 'الدورة غير متاحة');
   const enrollment = (await db.query('SELECT enrolled_at FROM course_enrollments WHERE course_id=$1 AND student_id=$2 AND active=TRUE', [courseId, studentId])).rows[0];
-  const listed = Array.isArray(course.enrollments) && course.enrollments.map(String).includes(studentId);
-  if (!enrollment || !listed) fail(403, 'يجب الاشتراك في الدورة أولًا');
+  const listed = hasCourseEnrollmentAccess(course, studentId, platformState.payments);
+  if (!enrollment || !listed) fail(403, 'يجب الاشتراك في الدورة واعتماد دفعها أولًا');
   return { course, enrolledAt: enrollment.enrolled_at instanceof Date ? enrollment.enrolled_at : new Date(enrollment.enrolled_at) };
 }
 async function requireReleasedCourseLesson(db: StateQueryable, studentId: string, courseId: string, lessonIndex: number, state?: Record<string, any>): Promise<{ course: any; lesson: any; enrolledAt: Date }> {
@@ -1349,9 +1350,9 @@ async function loadAssignedExam(client: PoolClient, studentId: string, examId: s
   if (courseId) {
     const course = (Array.isArray(state.courses) ? state.courses : []).find((item: any) => String(item?.id) === courseId);
     if (!course || course.active === false) fail(403, 'الدورة المرتبطة بالاختبار غير متاحة');
-    const enrolledInState = isCourseExamEnrolled(course, studentId);
+    const enrolledInState = hasCourseEnrollmentAccess(course, studentId, state.payments);
     const enrollment = await client.query('SELECT 1 FROM course_enrollments WHERE course_id=$1 AND student_id=$2 AND active=TRUE', [courseId, studentId]);
-    if (!enrolledInState && !enrollment.rowCount) fail(403, 'يجب الاشتراك في الدورة أولًا لبدء امتحانها');
+    if (!enrolledInState || !enrollment.rowCount) fail(403, 'يجب الاشتراك في الدورة واعتماد دفعها أولًا لبدء امتحانها');
     await requireCourseVideosComplete(client, studentId, courseId, state);
   }
   const teacherId = str(exam.teacher || exam.teacherId).trim();
@@ -1552,6 +1553,7 @@ app.post('/api/v1/courses/enroll-free', async (req, res, next) => {
     const originalState = await readPlatformState(client), state = structuredClone(originalState);
     const course = (Array.isArray(state.courses) ? state.courses : []).find((item:any) => String(item?.id) === id);
     if (!course || course.active === false) fail(404, 'course not found');
+    if (String(course.type ?? course.kind ?? 'free') === 'paid') fail(403, 'course is not free');
     const oldEnrollment = (await client.query('SELECT active,enrolled_at FROM course_enrollments WHERE course_id=$1 AND student_id=$2 FOR UPDATE', [id, claims.sub])).rows[0];
     const enrolledAt = oldEnrollment?.active ? new Date(oldEnrollment.enrolled_at) : new Date();
     const currentEnrollments = Array.isArray(course.enrollments) ? course.enrollments.map(String) : [];
