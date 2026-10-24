@@ -248,7 +248,7 @@
   };
   window.mkFilterCourseSubject=function(subject){const select=document.getElementById('mkCourseSubjectFilter');if(select)select.value=String(subject||'');window.mkFilterCourses?.();};
   const platformTabsByRole={
-    admin:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['studentAffairs','بيانات الطلاب كاملة','👥'],['subjects','المواد','📚'],['deviceControl','إدارة الأجهزة','📱'],['community','المنتدى','💬'],['assignments','الواجبات','📝'],['exams','الاختبارات','🧪'],['questionBank','بنك الأسئلة','🧠'],['grades','الدرجات','⭐'],['attendance','الحضور والغياب','🟢'],['schedule','الجدول','🗓️'],['reports','التقارير والتحليلات','📊'],['complaints','الدعم والشكاوى','🛟'],['certificates','الشهادات','🏅'],['ai','MK AI','🤖'],['rewards','متجر النقاط','⭐'],['library','المكتبة','📚'],['payments','طلبات الدفع','💳'],['activityLog','سجل النشاط','🧾'],['settings','إعدادات المنصة','⚙️']],
+    admin:[['dashboard','الرئيسية','⌂'],['courses','الدورات والفيديوهات','🎓'],['studentAffairs','الطلاب','👥'],['community','المنتدى','💬'],['assignments','الواجبات','📝'],['exams','الاختبارات','🧪'],['questionBank','بنك الأسئلة','🧠'],['grades','التقييمات','⭐'],['rewards','النقاط والمكافآت','🏆'],['library','مكتبة المنصة','📚'],['payments','المدفوعات','💳'],['deviceControl','أجهزة الحسابات','📱'],['activityLog','سجل النشاط','🧾'],['settings','الإعدادات','⚙️']],
     teacher:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['community','المنتدى','💬'],['assignments','الواجبات','📝'],['exams','الاختبارات','🧪'],['questionBank','بنك الأسئلة','🧠'],['grades','الدرجات','⭐'],['settings','إعدادات الحساب','⚙️']],
     parent:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['community','المنتدى','💬'],['assignments','واجبات الأبناء','📝'],['grades','درجات الأبناء','⭐'],['familyLink','ربط الأبناء','👨‍👩‍👧'],['ai','المساعد الذكي','🤖']],
     student:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['community','المنتدى','💬'],['exams','اختباراتي','🧪'],['grades','درجاتي','⭐'],['certificates','شهاداتي','🏅'],['achievements','إنجازاتي','🏆'],['rewards','متجر النقاط','⭐'],['library','مكتبتي','📚'],['payments','مدفوعاتي','💳'],['familyLink','ربط ولي الأمر','👨‍👩‍👧'],['ai','المساعد الذكي','🤖'],['profile','حسابي وإحصائياتي','👤']]
@@ -270,9 +270,10 @@
   window.mkOpenNotifications=function(){
     if(!current)return;
     if(!['admin','student','parent'].includes(String(current.role||'').toLowerCase()))return window.forbidden?.();
-    window.mkPlatformTab='notifications';window.mkClosePlatformMenu?.();
-    if(page==='courses'){renderSide();renderPage();window.scrollTo({top:0,behavior:'smooth'});}
-    else baseShowPage('courses');
+    window.mkClosePlatformMenu?.();
+    const content=window.pages.notifications?.();
+    if(!content)return window.toast?.('تعذر تحميل التنبيهات.');
+    window.openModal(`<div class="mk-notification-modal-content">${content}</div>`);
   };
   window.mkPlatformHome=function(){window.mkPlatformOpen('courses')};
   window.showPage=function(target){
@@ -355,9 +356,10 @@
   window.pages.settings=function(){if(!admin())return '<div class="card empty">إعدادات الإدارة غير متاحة لهذا الحساب.</div>';return unrestrictedSettingsPage?.()||'';};
   window.pages.courses=function(){
     const tabs=platformTabsByRole[String(current?.role||'').toLowerCase()]||[];
-    const active=window.mkPlatformTab==='notifications'&&['admin','student','parent'].includes(String(current?.role||'').toLowerCase())?'notifications':tabs.some(item=>item[0]===window.mkPlatformTab)?window.mkPlatformTab:'courses';
+    const active=tabs.some(item=>item[0]===window.mkPlatformTab)?window.mkPlatformTab:'courses';
     window.mkPlatformTab=active;
     syncPlatformHeader(tabs,active);
     const panel=active==='courses'?window.mkRenderPlatformCatalog():window.pages[active]?.()||'<div class="card empty">هذا القسم غير متاح.</div>';
-    return `<div class="mk-platform-hub"><main class="mk-platform-hub-panel">${panel}</main></div>`;
+    const adminTools=String(current?.role||'').toLowerCase()==='admin'&&active==='courses'?`<style>.mk-admin-quick-tools{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin-bottom:16px}.mk-admin-quick-tools .btn{width:100%;min-height:46px;white-space:normal}@media(max-width:720px){.mk-admin-quick-tools{grid-template-columns:1fr}}</style><section class="card mk-admin-quick-tools" aria-label="إجراءات إدارة المنصة"><button class="btn" data-mk-click="mkAdminCourseEnrollmentDialog()">🔐 إدارة التحاق الطلاب</button><button class="btn" data-mk-click="mkAdminVideoViewsDialog()">▶️ إضافة مشاهدات لطالب</button><button class="btn" data-mk-click="mkAdminReprocessVideoDialog()">🔄 إعادة معالجة فيديو</button></section>`:'';
+    return `<div class="mk-platform-hub">${adminTools}<main class="mk-platform-hub-panel">${panel}</main></div>`;
   };})();

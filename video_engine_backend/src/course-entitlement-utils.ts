@@ -19,9 +19,13 @@ export function hasApprovedCoursePayment(payments: unknown, studentId: string, c
 
 /** A paid course needs both an active enrollment and an administrator-approved order. */
 export function hasCourseEnrollmentAccess(course: any, studentId: string, payments: unknown): boolean {
+  if (Array.isArray(course?.adminEnrollmentRevocations)
+    && course.adminEnrollmentRevocations.some((id: unknown) => String(id) === studentId)) return false;
   const enrolled = Array.isArray(course?.enrollments)
     && course.enrollments.some((id: unknown) => String(id) === studentId);
   if (!enrolled) return false;
+  if (Array.isArray(course?.adminEnrollmentGrants)
+    && course.adminEnrollmentGrants.some((id: unknown) => String(id) === studentId)) return true;
   if (String(course?.type ?? course?.kind ?? 'free') !== 'paid') return true;
   return hasApprovedCoursePayment(payments, studentId, String(course?.id ?? ''));
 }

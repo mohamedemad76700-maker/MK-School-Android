@@ -172,4 +172,80 @@
     db.grades.push({ id: uid('g'), student: String(student.id), teacher: 'admin', subject: selected.subject.name, grade: selected.subject.grade, title, type: 'تقييم تعليمي', score, max, comment: document.getElementById('mkAdminGradeComment')?.value.trim() || '', date: new Date().toISOString().slice(0, 10) });
     save(); audit('admin_grade_create', `${student.name} — ${title}`); closeModal(); renderPage(); window.toast?.('تم حفظ التقييم للطالب.');
   };
+
+  function adminStudents() {
+    return (Array.isArray(db.students) ? db.students : []).filter(student => student && String(student.id || '').trim());
+  }
+  function adminVideoOptions() {
+    const videos = new Map();
+    for (const course of Array.isArray(db.courses) ? db.courses : []) {
+      for (const [index, lesson] of (Array.isArray(course.lessons) ? course.lessons : []).entries()) {
+        const ref = String(lesson?.videoRef || lesson?.videoUrl || '').trim();
+        let id = '';
+        if (ref.startsWith('hls:video-engine:')) id = ref.slice('hls:video-engine:'.length).split('|')[0].replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 255);
+        else if (/^https?:\/\//i.test(ref)) id = `external_${String(lesson?.id || `${course.id}_${index}`).replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 240)}`;
+        if (id) videos.set(id, `${course.title || 'دورة'} — ${lesson.title || `الدرس ${index + 1}`}`);
+      }
+    }
+    return [...videos.entries()];
+  }
+  async function adminApi(path, body) {
+    const base = window.mkVideoEngineUrl?.('') || '';
+    const token = typeof mkRuntimeGetItem === 'function' ? mkRuntimeGetItem('mk_video_jwt') : '';
+    if (!isAdmin() || !base || !token) throw new Error('سجّل دخول الإدارة وتأكد من اتصال خادم المنصة.');
+    const response = await fetch(base + path, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }, body: JSON.stringify(body), cache: 'no-store' });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.message || data.error || 'تعذر تنفيذ العملية على الخادم.');
+    return data;
+  }
+
+  window.mkAdminCourseEnrollmentDialog = function () {
+    if (!isAdmin()) return window.forbidden?.();
+    const students = adminStudents(), courses = (Array.isArray(db.courses) ? db.courses : []).filter(course => course.active !== false);
+    if (!students.length || !courses.length) return window.toast?.('أضف طالبًا ودورة منشورة أولًا.');
+    window.openModal(`<div class="section-head"><div><h3>إدارة التحاق الطلاب</h3><span class="small muted">فتح الدورة يتجاوز طلب الدفع لهذا الطالب فقط. إلغاء الدورة يوقف وصوله للمحتوى والاختبارات.</span></div><button class="btn" type="button" data-mk-click="closeModal()">إغلاق</button></div><form data-mk-submit="mkAdminCourseEnrollmentSave(event)"><label>الطالب<select id="mkAdminEnrollStudent" required>${students.map(student => `<option value="${escape(student.id)}">${escape(student.name || student.id)} — ${escape(student.grade || 'طالب')}</option>`).join('')}</select></label><label>الدورة<select id="mkAdminEnrollCourse" required>${courses.map(course => `<option value="${escape(course.id)}">${escape(course.title || course.id)}${course.type === 'paid' ? ' — مدفوعة' : ' — مجانية'}</option>`).join('')}</select></label><label>الإجراء<select id="mkAdminEnrollAction"><option value="grant">فتح الدورة للطالب</option><option value="revoke">إلغاء وصول الطالب للدورة</option></select></label><button class="btn primary" style="width:100%;margin-top:12px">تأكيد وتطبيق</button></form><div class="notice warn" style="margin-top:12px">كل تغيير يُسجّل في سجل الإدارة ويطبّقه الخادم على فيديوهات الدورة.</div>`);
+  };
+  window.mkAdminCourseEnrollmentSave = async function (event) {
+    event.preventDefault(); if (!isAdmin()) return window.forbidden?.();
+    const studentId = document.getElementById('mkAdminEnrollStudent')?.value || '', courseId = document.getElementById('mkAdminEnrollCourse')?.value || '', action = document.getElementById('mkAdminEnrollAction')?.value || '';
+    const student = adminStudents().find(item => String(item.id) === String(studentId)), course = (db.courses || []).find(item => String(item.id) === String(courseId));
+    if (!student || !course || !['grant','revoke'].includes(action)) return window.toast?.('اختر طالبًا ودورة صالحين.');
+    if (action === 'revoke' && !window.confirm(`إلغاء وصول ${student.name || student.id} إلى «${course.title}»؟`)) return;
+    try {
+      const result = await adminApi('/api/v1/admin/courses/enrollment', { student_id: studentId, course_id: courseId, action });
+      await window.mkBackendPullPlatform?.(true);
+      window.closeModal(); window.renderPage();
+      window.toast?.(action === 'grant' ? 'تم فتح الدورة للطالب.' : 'تم إلغاء وصول الطالب للدورة.');
+      return result;
+    } catch (error) { window.toast?.(error.message || 'تعذر تحديث صلاحية الدورة.'); }
+  };
+
+  window.mkAdminVideoViewsDialog = function () {
+    if (!isAdmin()) return window.forbidden?.();
+    const students = adminStudents(), videos = adminVideoOptions();
+    if (!students.length || !videos.length) return window.toast?.('لا توجد فيديوهات دورات صالحة لإضافة مشاهدات لها.');
+    window.openModal(`<div class="section-head"><div><h3>إضافة مشاهدات لطالب</h3><span class="small muted">تُضاف المشاهدات إلى حد الطالب لهذا الفيديو فقط ولا تفتح الدورة تلقائيًا.</span></div><button class="btn" type="button" data-mk-click="closeModal()">إغلاق</button></div><form data-mk-submit="mkAdminGrantVideoViews(event)"><label>الطالب<select id="mkAdminViewStudent" required>${students.map(student => `<option value="${escape(student.id)}">${escape(student.name || student.id)} — ${escape(student.grade || 'طالب')}</option>`).join('')}</select></label><label>الفيديو<select id="mkAdminViewVideo" required>${videos.map(([id, title]) => `<option value="${escape(id)}">${escape(title)}</option>`).join('')}</select></label><label>عدد المشاهدات الإضافية<input id="mkAdminExtraViews" type="number" min="1" max="50" value="1" required></label><button class="btn primary" style="width:100%;margin-top:12px">إضافة المشاهدات</button></form><div class="small muted" style="margin-top:10px">الحد الإداري لكل عملية 50 مشاهدة، وبحد أقصى تراكمي 500 مشاهدة إضافية لكل طالب وفيديو.</div>`);
+  };
+  window.mkAdminGrantVideoViews = async function (event) {
+    event.preventDefault(); if (!isAdmin()) return window.forbidden?.();
+    const studentId = document.getElementById('mkAdminViewStudent')?.value || '', videoId = document.getElementById('mkAdminViewVideo')?.value || '', additionalViews = Number(document.getElementById('mkAdminExtraViews')?.value);
+    if (!adminStudents().some(item => String(item.id) === String(studentId)) || !adminVideoOptions().some(([id]) => id === videoId) || !Number.isSafeInteger(additionalViews) || additionalViews < 1 || additionalViews > 50) return window.toast?.('راجع بيانات الطالب والفيديو وعدد المشاهدات.');
+    try {
+      const data = await adminApi('/api/v1/admin/video/grant-views', { student_id: studentId, video_id: videoId, additional_views: additionalViews });
+      window.closeModal(); window.toast?.(`تمت إضافة ${data.additional_views} مشاهدة لهذا الطالب والفيديو.`);
+    } catch (error) { window.toast?.(error.message || 'تعذر إضافة المشاهدات.'); }
+  };
+
+  window.mkAdminReprocessVideoDialog = function () {
+    if (!isAdmin()) return window.forbidden?.();
+    const courses = (Array.isArray(db.courses) ? db.courses : []).filter(course => Array.isArray(course.videoJobs) && course.videoJobs.length);
+    window.openModal(`<div class="section-head"><div><h3>إعادة معالجة الفيديو</h3><span class="small muted">إعادة محاولة الفيديوهات التي فشلت وما زال ملفها الأصلي محفوظًا على الخادم.</span></div><button class="btn" type="button" data-mk-click="closeModal()">إغلاق</button></div><div class="list">${courses.map(course => `<article class="list-item"><div><b>${escape(course.title || 'دورة')}</b><div class="small muted">${escape(course.videoError || course.videoProcessingMessage || 'تجهيز الفيديو قيد المتابعة')}</div></div><button class="btn primary" data-mk-click="mkAdminReprocessVideo('${quote(course.id)}')">إعادة المعالجة</button></article>`).join('') || '<div class="empty">لا توجد عمليات فاشلة قابلة لإعادة المحاولة. إذا اكتملت المعالجة وحُذف الملف الأصلي، ارفع نسخة الفيديو من جديد.</div>'}</div>`);
+  };
+  window.mkAdminReprocessVideo = async function (courseId) {
+    if (!isAdmin()) return window.forbidden?.();
+    const course = (Array.isArray(db.courses) ? db.courses : []).find(item => String(item.id) === String(courseId));
+    if (!course || !Array.isArray(course.videoJobs) || !course.videoJobs.length) return window.toast?.('لا توجد مهمة معالجة مرتبطة بهذه الدورة.');
+    window.closeModal();
+    await window.mkRetryCourseProcessing?.(course);
+  };
 })();

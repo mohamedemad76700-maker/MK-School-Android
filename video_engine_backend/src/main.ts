@@ -15,7 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normalizeExamQuestion, normalizeExamChallengeLimit, publicExamQuestionForStudent, gradeExamAnswers, normalizeSubmittedExamAnswers, incorrectExamQuestionIndexes, validateExamRetryAnswers, buildExamAnswerReview } from './exam-utils.js';
 import { summarizeLearningStreak } from './learning-streak-utils.js';
-import { nextVideoViewCount } from './video-view-utils.js';
+import { consumeVideoView } from './video-view-utils.js';
 import { exceedsAiDailyLimit, filterAiCoursesForEnrolledStudents, minimizeAiContext } from './ai-context-utils.js';
 import { applyPlatformStateChanges } from './platform-state-utils.js';
 import { hasCourseEnrollmentAccess } from './course-entitlement-utils.js';
@@ -437,6 +437,13 @@ function filterState(raw: any, claims: Claims, parentIds: string[] | null = null
       if (!x || typeof x !== 'object') return x;
       const copy = { ...x };
       for (const listKey of ['enrollments','pending','studentIds','students']) if (Array.isArray(copy[listKey])) copy[listKey] = copy[listKey].filter((sid: any) => scopedStudentIds.includes(String(typeof sid === 'object' ? sid?.id : sid)));
+      if (key === 'courses' && claims.role !== 'admin') {
+        const visibleIds = claims.role === 'student' ? [id] : linkedIds;
+        const grants = Array.isArray(x?.adminEnrollmentGrants) ? x.adminEnrollmentGrants.map(String) : [];
+        copy.adminGrantedTo = visibleIds.filter(studentId => grants.includes(studentId));
+        delete copy.adminEnrollmentGrants;
+        delete copy.adminEnrollmentRevocations;
+      }
       if (key === 'courses' && (claims.role === 'student' || claims.role === 'parent') && Array.isArray(copy.lessons)) {
         const dates = copy.enrolledAtByStudent && typeof copy.enrolledAtByStudent === 'object' ? copy.enrolledAtByStudent : {};
         const eligibleIds = claims.role === 'student' ? [id] : linkedIds;
@@ -1539,6 +1546,91 @@ app.post('/api/v1/admin/video/reset-views', async (req, res, next) => {
     res.json({ status: 'ok', message: 'video view counters reset' });
   } catch (e) { next(e); }
 });
+app.post('/api/v1/admin/video/grant-views', async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const claims = await admin(req);
+    const studentId = str(req.body?.student_id).trim();
+    const videoId = safeId(req.body?.video_id);
+    const additionalViews = Number(req.body?.additional_views);
+    if (!studentId || studentId.length > 255 || !videoId || !Number.isSafeInteger(additionalViews) || additionalViews < 1 || additionalViews > 50) fail(400, 'حدد الطالب والفيديو وعددًا من 1 إلى 50 مشاهدة إضافية');
+    await client.query('BEGIN');
+    const student = await client.query("SELECT id FROM video_users WHERE id=$1 AND role='student' AND active=TRUE", [studentId]);
+    if (!student.rowCount) fail(404, 'حساب الطالب غير موجود أو غير نشط');
+    const video = await client.query('SELECT 1 FROM course_videos WHERE video_id=$1 LIMIT 1', [videoId]);
+    if (!video.rowCount) fail(404, 'الفيديو غير مرتبط بأي دورة على المنصة');
+    await client.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))', [studentId, videoId]);
+    const grant = await client.query(`INSERT INTO student_video_view_grants(student_id,video_id,granted_views,used_views,granted_by)
+      VALUES($1,$2,$3,0,$4)
+      ON CONFLICT(student_id,video_id) DO UPDATE SET granted_views=student_video_view_grants.granted_views+EXCLUDED.granted_views,granted_by=EXCLUDED.granted_by,updated_at=now()
+      WHERE student_video_view_grants.granted_views+EXCLUDED.granted_views<=500
+      RETURNING granted_views,used_views`, [studentId, videoId, additionalViews, claims.sub]);
+    if (!grant.rowCount) fail(409, 'وصل هذا الطالب إلى الحد الأعلى للمشاهدات الإضافية لهذا الفيديو');
+    await client.query('COMMIT');
+    await audit(claims.sub, 'video_views_granted', `student=${studentId};video=${videoId};additional=${additionalViews}`);
+    res.json({ status: 'ok', student_id: studentId, video_id: videoId, additional_views: additionalViews, granted_views: Number(grant.rows[0].granted_views), used_views: Number(grant.rows[0].used_views) });
+  } catch (error) { await client.query('ROLLBACK').catch(() => {}); next(error); }
+  finally { client.release(); }
+});
+app.post('/api/v1/admin/courses/enrollment', async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const claims = await admin(req);
+    const courseId = str(req.body?.course_id).trim(), studentId = str(req.body?.student_id).trim();
+    const action = str(req.body?.action).trim();
+    if (!courseId || courseId.length > 255 || !studentId || studentId.length > 255 || !['grant','revoke'].includes(action)) fail(400, 'بيانات إدارة الالتحاق غير صالحة');
+    await client.query('BEGIN');
+    const activeStudent = await client.query("SELECT id FROM video_users WHERE id=$1 AND role='student' AND active=TRUE", [studentId]);
+    if (!activeStudent.rowCount) fail(404, 'حساب الطالب غير موجود أو غير نشط');
+    await client.query("INSERT INTO platform_state(id,state,updated_at,revision,updated_by) VALUES(1,'{}'::jsonb,now(),0,$1) ON CONFLICT(id) DO NOTHING", [claims.sub]);
+    const meta = (await client.query('SELECT revision FROM platform_state WHERE id=1 FOR UPDATE')).rows[0];
+    const state = await readPlatformState(client), updated = structuredClone(state);
+    const course = (Array.isArray(updated.courses) ? updated.courses : []).find((item: any) => String(item?.id) === courseId);
+    if (!course || course.active === false) fail(404, 'الدورة غير موجودة أو غير منشورة');
+    const grantIds = new Set((Array.isArray(course.adminEnrollmentGrants) ? course.adminEnrollmentGrants : []).map(String));
+    const revokedIds = new Set((Array.isArray(course.adminEnrollmentRevocations) ? course.adminEnrollmentRevocations : []).map(String));
+    const enrollments = new Set((Array.isArray(course.enrollments) ? course.enrollments : []).map(String));
+    course.enrolledAtByStudent = course.enrolledAtByStudent && typeof course.enrolledAtByStudent === 'object' ? course.enrolledAtByStudent : {};
+    if (action === 'grant') {
+      grantIds.add(studentId); revokedIds.delete(studentId); enrollments.add(studentId);
+      course.enrolledAtByStudent[studentId] ||= new Date().toISOString();
+    } else {
+      grantIds.delete(studentId); revokedIds.add(studentId); enrollments.delete(studentId);
+      delete course.enrolledAtByStudent[studentId];
+    }
+    course.adminEnrollmentGrants = [...grantIds];
+    course.adminEnrollmentRevocations = [...revokedIds];
+    course.enrollments = [...enrollments];
+    const lessonVideos = (Array.isArray(course.lessons) ? course.lessons : []).map((lesson: any, index: number) => courseVideoAccessId(course, lesson, index)).filter(Boolean);
+    const kind = String(course.type ?? course.kind ?? 'free') === 'paid' ? 'paid' : 'free';
+    await client.query('INSERT INTO course_catalog(course_id,kind,active) VALUES($1,$2,TRUE) ON CONFLICT(course_id) DO UPDATE SET kind=EXCLUDED.kind,active=TRUE,updated_at=now()', [courseId, kind]);
+    for (const videoId of lessonVideos) await client.query('INSERT INTO course_videos(course_id,video_id) VALUES($1,$2) ON CONFLICT DO NOTHING', [courseId, videoId]);
+    const enrolledAt = new Date(String(course.enrolledAtByStudent[studentId] || new Date().toISOString()));
+    await client.query('INSERT INTO course_enrollments(course_id,student_id,active,enrolled_at) VALUES($1,$2,$3,$4) ON CONFLICT(course_id,student_id) DO UPDATE SET active=EXCLUDED.active,enrolled_at=CASE WHEN course_enrollments.active THEN course_enrollments.enrolled_at ELSE EXCLUDED.enrolled_at END,updated_at=now()', [courseId, studentId, action === 'grant', enrolledAt]);
+    if (action === 'grant') {
+      for (const videoId of lessonVideos) await client.query('INSERT INTO video_access(student_id,video_id,active) VALUES($1,$2,TRUE) ON CONFLICT(student_id,video_id) DO UPDATE SET active=TRUE,updated_at=now()', [studentId, videoId]);
+    } else {
+      for (const videoId of lessonVideos) {
+        const related = await client.query('SELECT course_id FROM course_videos WHERE video_id=$1', [videoId]);
+        let hasAnotherEntitlement = false;
+        for (const row of related.rows) {
+          const otherCourseId = String(row.course_id);
+          if (otherCourseId === courseId) continue;
+          const other = (Array.isArray(updated.courses) ? updated.courses : []).find((item: any) => String(item?.id) === otherCourseId);
+          const activeEnrollment = await client.query('SELECT 1 FROM course_enrollments WHERE course_id=$1 AND student_id=$2 AND active=TRUE', [otherCourseId, studentId]);
+          if (other && activeEnrollment.rowCount && hasCourseEnrollmentAccess(other, studentId, updated.payments)) { hasAnotherEntitlement = true; break; }
+        }
+        await client.query('UPDATE video_access SET active=$3,updated_at=now() WHERE student_id=$1 AND video_id=$2', [studentId, videoId, hasAnotherEntitlement]);
+      }
+    }
+    await persistPlatformState(client, state, updated, claims.sub);
+    await client.query("UPDATE platform_state SET state='{}'::jsonb,updated_at=now(),revision=revision+1,updated_by=$1 WHERE id=1", [claims.sub]);
+    await client.query('COMMIT');
+    await audit(claims.sub, action === 'grant' ? 'admin_course_access_granted' : 'admin_course_access_revoked', `course=${courseId};student=${studentId}`);
+    res.json({ status: 'ok', action, course_id: courseId, student_id: studentId, revision: Number(meta?.revision || 0) + 1 });
+  } catch (error) { await client.query('ROLLBACK').catch(() => {}); next(error); }
+  finally { client.release(); }
+});
 app.post('/api/v1/courses/enroll-free', async (req, res, next) => {
   const client = await pool.connect();
   try {
@@ -2190,7 +2282,7 @@ app.post('/api/v1/video/process', async (req,res,next) => {
   } catch(e) { next(e); }
 });
 app.post('/api/v1/video/view', async (req,res,next) => {
-  const client = await pool.connect(); try { const token = str(req.body?.token), videoId = str(req.body?.video_id).trim(); if(!token || !videoId) fail(400,'token and video_id are required'); const claims=verifyToken(token); await requireDeviceSession(claims); if(claims.role!=='student') fail(403,'only students can consume course videos'); await requireVideoAccess(claims.sub,videoId); await requireReleasedCourseVideo(pool,claims.sub,videoId); if(!videoId.startsWith('external_')) { const playlist=await stat(path.join(MEDIA_ROOT,'hls',safeId(videoId),'playlist.m3u8')).catch(()=>null); if(!playlist?.isFile()) fail(409,'الفيديو لم يكتمل تحويله على الخادم بعد؛ لم يتم خصم مشاهدة.'); } await client.query('BEGIN'); await client.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',[claims.sub,videoId]); const found=await client.query('SELECT view_count FROM student_video_views WHERE student_id=$1 AND video_id=$2 FOR UPDATE',[claims.sub,videoId]); const current=Number(found.rows[0]?.view_count || 0), count=nextVideoViewCount(current,MAX_VIEWS); if(count===null) return fail(403,'maximum of 3 views reached'); await client.query('INSERT INTO student_video_views(student_id,video_id,view_count) VALUES($1,$2,$3) ON CONFLICT(student_id,video_id) DO UPDATE SET view_count=EXCLUDED.view_count',[claims.sub,videoId,count]); await client.query('COMMIT'); const mediaToken=tokenFor({sub:claims.sub,role:'student',device:claims.device,session_version:claims.session_version ?? 1,video_id:videoId},MEDIA_TOKEN_TTL_SECONDS); res.json({status:'AUTHORIZED',license_key:mediaToken,remaining_views:MAX_VIEWS-count,message:`authorized; view ${count} of ${MAX_VIEWS}`}); }
+  const client = await pool.connect(); try { const token = str(req.body?.token), videoId = str(req.body?.video_id).trim(); if(!token || !videoId) fail(400,'token and video_id are required'); const claims=verifyToken(token); await requireDeviceSession(claims); if(claims.role!=='student') fail(403,'only students can consume course videos'); await requireVideoAccess(claims.sub,videoId); await requireReleasedCourseVideo(pool,claims.sub,videoId); if(!videoId.startsWith('external_')) { const playlist=await stat(path.join(MEDIA_ROOT,'hls',safeId(videoId),'playlist.m3u8')).catch(()=>null); if(!playlist?.isFile()) fail(409,'الفيديو لم يكتمل تحويله على الخادم بعد؛ لم يتم خصم مشاهدة.'); } await client.query('BEGIN'); await client.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',[claims.sub,videoId]); const found=await client.query('SELECT view_count FROM student_video_views WHERE student_id=$1 AND video_id=$2 FOR UPDATE',[claims.sub,videoId]); const currentBase=Number(found.rows[0]?.view_count || 0), grant=(await client.query('SELECT granted_views,used_views FROM student_video_view_grants WHERE student_id=$1 AND video_id=$2 FOR UPDATE',[claims.sub,videoId])).rows[0], allocation=consumeVideoView(currentBase,Number(grant?.granted_views || 0),Number(grant?.used_views || 0),MAX_VIEWS); if(allocation===null) throw new HttpError(403,'انتهت المشاهدات المتاحة لهذا الفيديو'); await client.query('INSERT INTO student_video_views(student_id,video_id,view_count) VALUES($1,$2,$3) ON CONFLICT(student_id,video_id) DO UPDATE SET view_count=EXCLUDED.view_count',[claims.sub,videoId,allocation.baseCount]); if(allocation.usedGrant) await client.query('UPDATE student_video_view_grants SET used_views=$3,updated_at=now() WHERE student_id=$1 AND video_id=$2',[claims.sub,videoId,allocation.usedExtra]); await client.query('COMMIT'); const mediaToken=tokenFor({sub:claims.sub,role:'student',device:claims.device,session_version:claims.session_version ?? 1,video_id:videoId},MEDIA_TOKEN_TTL_SECONDS); res.json({status:'AUTHORIZED',license_key:mediaToken,remaining_views:allocation.remaining,message:`authorized; view ${allocation.totalCount} with ${allocation.remaining} remaining`}); }
   catch(e) { await client.query('ROLLBACK').catch(()=>{}); next(e); } finally { client.release(); }
 });
 app.post('/api/v1/admin/video/preview-token', async (req,res,next) => {
@@ -2213,7 +2305,7 @@ app.post('/api/v1/drm/license', async (req,res,next) => {
     const key=`rate:license:${deviceHash}`; const count=await redis.incr(key); if(count===1) await redis.expire(key,60); if(count>10) fail(429,'too many requests');
     const sessionKey=`session:${claims.sub}`; const existing=await redis.get(sessionKey); if(existing && existing!==deviceHash) fail(409,'student is already active on another device'); await redis.set(sessionKey,deviceHash,{EX:1800});
     const client=await pool.connect();
-    try { await client.query('BEGIN'); await client.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',[claims.sub,videoId]); const row=await client.query('SELECT view_count FROM student_video_views WHERE student_id=$1 AND video_id=$2 FOR UPDATE',[claims.sub,videoId]); const current=Number(row.rows[0]?.view_count||0), countNow=nextVideoViewCount(current,MAX_VIEWS); if(countNow===null) return fail(403,'maximum of 3 views reached'); await client.query('INSERT INTO student_video_views(student_id,video_id,view_count) VALUES($1,$2,$3) ON CONFLICT(student_id,video_id) DO UPDATE SET view_count=EXCLUDED.view_count',[claims.sub,videoId,countNow]); await client.query('COMMIT'); const mediaToken=tokenFor({sub:claims.sub,role:'student',device:claims.device,session_version:claims.session_version ?? 1,video_id:videoId},MEDIA_TOKEN_TTL_SECONDS); res.json({status:'AUTHORIZED',license_key:mediaToken,remaining_views:MAX_VIEWS-countNow,message:`authorized; view ${countNow} of ${MAX_VIEWS}`}); }
+    try { await client.query('BEGIN'); await client.query('SELECT pg_advisory_xact_lock(hashtext($1),hashtext($2))',[claims.sub,videoId]); const row=await client.query('SELECT view_count FROM student_video_views WHERE student_id=$1 AND video_id=$2 FOR UPDATE',[claims.sub,videoId]); const currentBase=Number(row.rows[0]?.view_count||0), grant=(await client.query('SELECT granted_views,used_views FROM student_video_view_grants WHERE student_id=$1 AND video_id=$2 FOR UPDATE',[claims.sub,videoId])).rows[0], allocation=consumeVideoView(currentBase,Number(grant?.granted_views||0),Number(grant?.used_views||0),MAX_VIEWS); if(allocation===null) throw new HttpError(403,'انتهت المشاهدات المتاحة لهذا الفيديو'); await client.query('INSERT INTO student_video_views(student_id,video_id,view_count) VALUES($1,$2,$3) ON CONFLICT(student_id,video_id) DO UPDATE SET view_count=EXCLUDED.view_count',[claims.sub,videoId,allocation.baseCount]); if(allocation.usedGrant) await client.query('UPDATE student_video_view_grants SET used_views=$3,updated_at=now() WHERE student_id=$1 AND video_id=$2',[claims.sub,videoId,allocation.usedExtra]); await client.query('COMMIT'); const mediaToken=tokenFor({sub:claims.sub,role:'student',device:claims.device,session_version:claims.session_version ?? 1,video_id:videoId},MEDIA_TOKEN_TTL_SECONDS); res.json({status:'AUTHORIZED',license_key:mediaToken,remaining_views:allocation.remaining,message:`authorized; view ${allocation.totalCount} with ${allocation.remaining} remaining`}); }
     catch(e) { await client.query('ROLLBACK').catch(()=>{}); throw e; } finally { client.release(); }
   } catch(e) { next(e); }
 });

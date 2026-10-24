@@ -16,6 +16,15 @@ test('paid courses stay locked unless the same student has an approved payment',
   assert.equal(hasCourseEnrollmentAccess(course, 'student-1', approved), true);
 });
 
+test('administrator course grants unlock paid courses and administrator revocation overrides payment', () => {
+  const course = { id: 'paid-1', type: 'paid', enrollments: ['student-1'], adminEnrollmentGrants: ['student-1'] };
+  assert.equal(hasCourseEnrollmentAccess(course, 'student-1', []), true);
+  course.adminEnrollmentRevocations = ['student-1'];
+  assert.equal(hasCourseEnrollmentAccess(course, 'student-1', [{ ...approved[0], status: 'paid' }]), false);
+  delete course.adminEnrollmentRevocations;
+  assert.equal(hasCourseEnrollmentAccess(course, 'student-1', []), true);
+});
+
 test('a library payment cannot unlock a course with a colliding identifier', () => {
   assert.equal(hasApprovedCoursePayment([{ courseId: 'paid-1', resourceId: 'paid-1', kind: 'library', studentId: 'student-1', status: 'paid' }], 'student-1', 'paid-1'), false);
 });
