@@ -251,16 +251,17 @@
     admin:[['dashboard','الرئيسية','⌂'],['courses','الدورات والفيديوهات','🎓'],['studentAffairs','الطلاب','👥'],['community','المنتدى','💬'],['assignments','الواجبات','📝'],['exams','الاختبارات','🧪'],['questionBank','بنك الأسئلة','🧠'],['grades','التقييمات','⭐'],['rewards','النقاط والمكافآت','🏆'],['library','مكتبة المنصة','📚'],['payments','المدفوعات','💳'],['deviceControl','أجهزة الحسابات','📱'],['activityLog','سجل النشاط','🧾'],['settings','الإعدادات','⚙️']],
     teacher:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['community','المنتدى','💬'],['assignments','الواجبات','📝'],['exams','الاختبارات','🧪'],['questionBank','بنك الأسئلة','🧠'],['grades','الدرجات','⭐'],['settings','إعدادات الحساب','⚙️']],
     parent:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['community','المنتدى','💬'],['assignments','واجبات الأبناء','📝'],['grades','درجات الأبناء','⭐'],['familyLink','ربط الأبناء','👨‍👩‍👧'],['ai','المساعد الذكي','🤖']],
-    student:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['community','المنتدى','💬'],['exams','اختباراتي','🧪'],['grades','درجاتي','⭐'],['certificates','شهاداتي','🏅'],['achievements','إنجازاتي','🏆'],['rewards','متجر النقاط','⭐'],['library','مكتبتي','📚'],['payments','مدفوعاتي','💳'],['familyLink','ربط ولي الأمر','👨‍👩‍👧'],['ai','المساعد الذكي','🤖'],['profile','حسابي وإحصائياتي','👤']]
+    student:[['dashboard','الرئيسية التعليمية','⌂'],['courses','الدورات والمحاضرات','🎓'],['community','المنتدى','💬'],['exams','اختباراتي','🧪'],['grades','درجاتي','⭐'],['certificates','شهاداتي','🏅'],['achievements','إنجازاتي','🏆'],['rewards','متجر النقاط','⭐'],['library','مكتبتي','📚'],['payments','مدفوعاتي','💳'],['familyLink','ربط ولي الأمر','👨‍👩‍👧'],['ai','المساعد الذكي','🤖']]
   };
   delete platformTabsByRole.teacher;
   window.mkPlatformAdminTabs=platformTabsByRole.admin;
-  const platformPageRoutes={community:'community',subjects:'subjects',assignments:'assignments',exams:'exams',questionBank:'questionBank',grades:'grades',attendance:'attendance',schedule:'schedule',reports:'reports',complaints:'complaints',achievements:'achievements',library:'library',payments:'payments',profile:'profile',familyLink:'familyLink',rewards:'rewards',activityLog:'activityLog',studentAffairs:'studentAffairs',deviceControl:'deviceControl',settings:'settings',certificates:'certificates',dashboard:'learningDashboard'};
+  const platformPageRoutes={community:'community',subjects:'subjects',assignments:'assignments',exams:'exams',questionBank:'questionBank',grades:'grades',attendance:'attendance',schedule:'schedule',reports:'reports',complaints:'complaints',achievements:'achievements',library:'library',payments:'payments',familyLink:'familyLink',rewards:'rewards',activityLog:'activityLog',studentAffairs:'studentAffairs',deviceControl:'deviceControl',settings:'settings',certificates:'certificates',dashboard:'learningDashboard'};
   platformTabsByRole.parent=platformTabsByRole.parent.filter(item=>item[0]!=='courses');
   for(const name of ['parent','student'])platformTabsByRole[name]=platformTabsByRole[name].filter(item=>item[0]!=='settings');
   const baseShowPage=window.showPage;
   window.mkPlatformOpen=function(tab){
     const tabs=platformTabsByRole[String(current?.role||'').toLowerCase()]||[];
+    if(window.__mkActiveExam&&tab!=='exams')return window.toast?.('أكمل الامتحان أو أنهِ محاولتك قبل فتح قسم آخر.');
     if(!tabs.some(item=>item[0]===tab))return window.toast?.('هذا القسم غير متاح لهذا الحساب');
     window.mkPlatformTab=tab;if(tab==='courses')window.mkPlatformView='catalog';
     window.mkClosePlatformMenu?.();
@@ -275,7 +276,7 @@
     if(!content)return window.toast?.('تعذر تحميل التنبيهات.');
     window.openModal(`<div class="mk-notification-modal-content">${content}</div>`);
   };
-  window.mkPlatformHome=function(){window.mkPlatformOpen('courses')};
+  window.mkPlatformHome=function(){window.mkPlatformOpen(String(current?.role||'').toLowerCase()==='parent'?'dashboard':'courses')};
   window.showPage=function(target){
     if(target==='notifications')return window.mkOpenNotifications();
     if(target==='courses')return window.mkPlatformOpen('courses');
@@ -327,7 +328,7 @@
     if(role==='student')return `<section class="card"><div class="section-head"><div><h3>👨‍👩‍👧 ربط حساب ولي الأمر</h3><span class="small muted">أنشئ كودًا مؤقتًا ليتمكن ولي أمرك من ربط حسابه ومتابعة نتائجك وواجباتك.</span></div></div><div class="notice">الكود صالح لمرة واحدة لمدة 15 دقيقة. شاركه مع ولي أمرك عبر وسيلة خاصة فقط.</div><button class="btn primary" style="margin-top:14px" data-mk-click="mkCreateParentLinkCode()">إنشاء كود ربط آمن</button><div id="parentLinkCodeResult" class="notice good" style="display:none;margin-top:14px" role="status" aria-live="polite"></div><div class="small muted" style="margin-top:12px">رقم ولي الأمر المسجل: <b dir="ltr">${escapeHtml(current?.parentPhone||current?.guardianPhone||'يمكنك مراجعته مع الإدارة')}</b></div></section>`;
     if(role==='parent'){
       const children=typeof visibleStudents==='function'?visibleStudents():[];
-      return `<section class="card"><div class="section-head"><div><h3>👨‍👩‍👧 ربط ومتابعة الأبناء</h3><span class="small muted">اربط حساب الطالب بكوده المؤقت لمتابعة درجاته وواجباته من داخل المنصة.</span></div><button class="btn" data-mk-click="showPage('grades')">درجات الأبناء</button></div><form class="row" data-mk-submit="mkRedeemParentLink();return false"><label style="flex:1">كود الربط الذي أنشأه الطالب<input id="parentLinkCode" inputmode="text" autocomplete="one-time-code" maxlength="32" required placeholder="أدخل الكود المرسل لك"></label><button class="btn primary" style="align-self:end">ربط حساب الطالب</button></form><h3 style="margin-top:20px">الأبناء المرتبطون</h3><div class="quick-grid">${children.map(child=>`<article class="quick"><b>${escapeHtml(child.name||'طالب')}</b><span class="small muted">${escapeHtml(child.grade||'')}</span><button class="btn" data-mk-click="showPage('grades')">متابعة النتائج</button></article>`).join('')||'<div class="empty" style="grid-column:1/-1">لا يوجد أبناء مرتبطون بعد. اطلب من الطالب إنشاء كود ربط من حسابه.</div>'}</div></section>`;
+      return `<section class="card"><div class="section-head"><div><h3>👨‍👩‍👧 ربط ومتابعة الأبناء</h3><span class="small muted">اربط حساب الطالب بكوده المؤقت لمتابعة درجاته وواجباته من داخل المنصة.</span></div><button class="btn" data-mk-click="showPage('grades')">درجات الأبناء</button></div><form class="row" data-mk-submit="mkRedeemParentLink(event)"><label style="flex:1">كود الربط الذي أنشأه الطالب<input id="parentLinkCode" inputmode="text" autocomplete="one-time-code" maxlength="32" required placeholder="أدخل الكود المرسل لك"></label><button class="btn primary" style="align-self:end">ربط حساب الطالب</button></form><h3 style="margin-top:20px">الأبناء المرتبطون</h3><div class="quick-grid">${children.map(child=>`<article class="quick"><b>${escapeHtml(child.name||'طالب')}</b><span class="small muted">${escapeHtml(child.grade||'')}</span><button class="btn" data-mk-click="showPage('grades')">متابعة النتائج</button></article>`).join('')||'<div class="empty" style="grid-column:1/-1">لا يوجد أبناء مرتبطون بعد. اطلب من الطالب إنشاء كود ربط من حسابه.</div>'}</div></section>`;
     }
     return '<div class="card empty">خدمة ربط ولي الأمر متاحة لحساب الطالب وولي الأمر فقط.</div>';
   };

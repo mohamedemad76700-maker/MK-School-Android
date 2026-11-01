@@ -1,0 +1,1 @@
+ALTER TABLE video_jobs ALTER COLUMN input_path DROP NOT NULL;

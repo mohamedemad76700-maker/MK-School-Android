@@ -1,6 +1,8 @@
 (function installSecureEvents(root, factory) {
   const api = factory([
   "__examFinish",
+  "__examBackToList",
+  "mkPlayYoutube",
   "__examGo",
   "__examMark",
   "__examNext",

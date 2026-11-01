@@ -1,5 +1,12 @@
 {
   "appId": "com.mkschool.mobile",
   "appName": "MK School",
-  "webDir": "www"
+  "webDir": "www",
+  "server": {
+    "androidScheme": "https",
+    "url": "https://mk-school-api.onrender.com",
+    "allowNavigation": [
+      "mk-school-api.onrender.com"
+    ]
+  }
 }

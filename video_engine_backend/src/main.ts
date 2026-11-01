@@ -10,10 +10,11 @@ import { createClient } from 'redis';
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { createReadStream } from 'node:fs';
-import { mkdir, readFile, readdir, realpath, rm, stat } from 'node:fs/promises';
+import { mkdir, readFile, readdir, realpath, rename, rm, stat } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { normalizeExamQuestion, normalizeExamChallengeLimit, publicExamQuestionForStudent, gradeExamAnswers, normalizeSubmittedExamAnswers, incorrectExamQuestionIndexes, validateExamRetryAnswers, buildExamAnswerReview } from './exam-utils.js';
+import { findLessonPrerequisiteIndex, hasPassedLessonPrerequisite, lessonPrerequisiteExamId } from './course-exam-utils.js';
 import { summarizeLearningStreak } from './learning-streak-utils.js';
 import { consumeVideoView } from './video-view-utils.js';
 import { exceedsAiDailyLimit, filterAiCoursesForEnrolledStudents, minimizeAiContext } from './ai-context-utils.js';
@@ -33,6 +34,7 @@ const ROOT = path.resolve(__dirname, '..');
 const PORT = Number(process.env.PORT || 8080);
 const DB_POOL_MAX = Math.max(5, Math.min(100, Number.parseInt(process.env.PG_POOL_MAX || '20', 10) || 20));
 const MEDIA_ROOT = path.resolve(process.env.MEDIA_ROOT || path.join(ROOT, 'media'));
+const VIDEO_SOURCE_RETENTION_DAYS = Math.max(7, Math.min(365, Number.parseInt(process.env.VIDEO_SOURCE_RETENTION_DAYS || '90', 10) || 90));
 const FFMPEG_CONFIGURED_PATH = process.env.FFMPEG_PATH?.trim() || 'ffmpeg';
 const JWT_SECRET = process.env.JWT_SECRET || '';
 const GROQ_MODEL = process.env.GROQ_MODEL?.trim() || 'openai/gpt-oss-120b';
@@ -82,15 +84,15 @@ app.disable('x-powered-by');
 app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : false);
 app.use(helmet({
   contentSecurityPolicy: { directives: {
-    defaultSrc: ["'self'"], baseUri: ["'self'"], objectSrc: ["'none'"],
+    defaultSrc: ["'self'"], baseUri: ["'self'"], objectSrc: ["'none'"], frameSrc: ["'self'", 'https://www.youtube-nocookie.com', 'https://www.youtube.com'],
     frameAncestors: ["'none'"], formAction: ["'self'"],
     // All executable scripts are external same-origin files. Inline event handlers below
     // remain temporarily enabled for the legacy UI, but inline <script> injection is blocked.
-    scriptSrc: ["'self'", 'https://cdnjs.cloudflare.com'],
+    scriptSrc: ["'self'", 'https://cdnjs.cloudflare.com', 'https://www.youtube.com'],
     // The legacy interface uses inline onclick/onsubmit handlers throughout; Helmet's
     // default script-src-attr 'none' silently disables login, registration, and navigation.
     scriptSrcAttr: ["'unsafe-inline'"],
-    workerSrc: ["'self'", 'blob:', 'https://cdnjs.cloudflare.com'], styleSrc: ["'self'", "'unsafe-inline'", 'https://cdnjs.cloudflare.com'],
+    workerSrc: ["'self'", 'blob:', 'https://cdnjs.cloudflare.com'], styleSrc: ["'self'", "'unsafe-inline'", 'https://cdnjs.cloudflare.com', 'https://fonts.googleapis.com'],
     imgSrc: ["'self'", 'data:', 'blob:', 'https:'], mediaSrc: ["'self'", 'blob:', 'https:'], fontSrc: ["'self'", 'data:', 'https:'],
     connectSrc: ["'self'", 'https://api.groq.com'], upgradeInsecureRequests: null,
   } }, crossOriginResourcePolicy: { policy: 'cross-origin' } }));
@@ -136,14 +138,21 @@ const readAuthCookie = (req: Request): string => {
   if (!entry) return '';
   try { return decodeURIComponent(entry.slice(AUTH_COOKIE.length + 1)); } catch { return ''; }
 };
-const setAuthCookie = (res: Response, token: string, persistent: boolean): void => {
-  const maxAge = persistent ? '; Max-Age=2592000' : '';
-  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
-  res.setHeader('Set-Cookie', `${AUTH_COOKIE}=${encodeURIComponent(token)}; Path=/; HttpOnly; SameSite=Lax${maxAge}${secure}`);
+const cookieScope = (req?: Request): string => {
+  const origin = req?.get('origin') || '';
+  const host = req?.get('host') || '';
+  const sameOrigin = Boolean(origin && host && origin === `${req?.protocol}://${host}`);
+  const crossSite = Boolean(origin) && !sameOrigin;
+  const sameSite = crossSite ? 'None' : 'Lax';
+  const secure = process.env.NODE_ENV === 'production' || sameSite === 'None' ? '; Secure' : '';
+  return `Path=/; HttpOnly; SameSite=${sameSite}${secure}`;
 };
-const clearAuthCookie = (res: Response): void => {
-  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
-  res.setHeader('Set-Cookie', `${AUTH_COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
+const setAuthCookie = (res: Response, token: string, persistent: boolean, req?: Request): void => {
+  const maxAge = persistent ? '; Max-Age=2592000' : '';
+  res.setHeader('Set-Cookie', `${AUTH_COOKIE}=${encodeURIComponent(token)}; ${cookieScope(req)}${maxAge}`);
+};
+const clearAuthCookie = (res: Response, req?: Request): void => {
+  res.setHeader('Set-Cookie', `${AUTH_COOKIE}=; ${cookieScope(req)}; Max-Age=0`);
 };
 const verifyToken = (token: string): Claims => {
   try {
@@ -450,8 +459,10 @@ function filterState(raw: any, claims: Claims, parentIds: string[] | null = null
         copy.enrollments = (Array.isArray(copy.enrollments) ? copy.enrollments : []).filter((studentId: any) => hasCourseEnrollmentAccess(x, String(studentId), state.payments));
         copy.lessons = copy.lessons.map((lesson: any, index: number) => {
           const enrolled = eligibleIds.some(studentId => hasCourseEnrollmentAccess(x, studentId, state.payments));
-          const open = eligibleIds.some(studentId => hasCourseEnrollmentAccess(x, studentId, state.payments)
-            && lessonReleaseIsOpen(lesson, x, dates[studentId]));
+          const releaseOpen = eligibleIds.some(studentId => hasCourseEnrollmentAccess(x, studentId, state.payments) && lessonReleaseIsOpen(lesson, x, dates[studentId]));
+          const prerequisiteId = lessonPrerequisiteExamId(lesson);
+          const prerequisitePassed = !prerequisiteId || eligibleIds.some(studentId => hasPassedLessonPrerequisite(lesson, studentId, Array.isArray(state.exams) ? state.exams : [], Array.isArray(state.examResults) ? state.examResults : []));
+          const open = releaseOpen && prerequisitePassed;
           const releaseAt = typeof lesson?.releaseAt === 'string' ? lesson.releaseAt : '';
           const releaseWeek = lessonReleaseWeek(lesson);
           const label = releaseAt
@@ -459,7 +470,7 @@ function filterState(raw: any, claims: Claims, parentIds: string[] | null = null
             : Number.isSafeInteger(releaseWeek) && Number(releaseWeek) >= 1
               ? `محتوى الأسبوع ${Number(releaseWeek)} متاح لاحقًا`
               : 'محتوى هذا الدرس متاح لاحقًا';
-          return open ? lesson : { id: lesson?.id || `locked_${index}`, title: label, releaseAt, releaseWeek: Number.isSafeInteger(releaseWeek) && Number(releaseWeek) >= 1 ? Number(releaseWeek) : 1, videoRef: '', videoUrl: '', description: '', duration: '', locked: true, lockReason: enrolled ? 'release_schedule' : 'enrollment_required' };
+          return open ? lesson : { id: lesson?.id || `locked_${index}`, title: prerequisiteId && releaseOpen ? String(lesson?.title || 'اجتز امتحان فتح الدرس') : label, releaseAt, releaseWeek: Number.isSafeInteger(releaseWeek) && Number(releaseWeek) >= 1 ? Number(releaseWeek) : 1, videoRef: '', videoUrl: '', description: '', duration: '', ...(prerequisiteId ? { prerequisiteExamId: prerequisiteId } : {}), locked: true, lockReason: !enrolled ? 'enrollment_required' : !releaseOpen ? 'release_schedule' : 'exam_required' };
         });
         delete copy.enrolledAtByStudent;
       }
@@ -666,15 +677,31 @@ async function requireReleasedCourseLesson(db: StateQueryable, studentId: string
   if (!lessonReleaseIsOpen(lesson, enrollment.course, enrollment.enrolledAt)) {
     fail(403, 'لم يحن موعد إتاحة هذا المحتوى بعد');
   }
+    const prerequisiteExamId = lessonPrerequisiteExamId(lesson);
+  if (prerequisiteExamId) {
+    const exam = (Array.isArray(state?.exams) ? state!.exams : []).find((item: any) => String(item?.id) === prerequisiteExamId);
+    if (!exam || exam.active === false || exam.published === false || exam.disabled === true) fail(403, 'امتحان فتح هذا الدرس غير متاح؛ راجع إدارة المنصة');
+    const result = await db.query('SELECT percentage,forfeited FROM exam_submissions WHERE student_id=$1 AND exam_id=$2 ORDER BY submitted_at DESC LIMIT 1', [studentId, prerequisiteExamId]);
+    if (!hasPassedLessonPrerequisite(lesson, studentId, [exam], result.rows.map((row: any) => ({ ...row, student: studentId, exam: prerequisiteExamId })))) {
+      const rawPassPercent = Number(exam.passPercent), passPercent = Number.isFinite(rawPassPercent) ? Math.max(0, Math.min(100, rawPassPercent)) : 50;
+      fail(403, `اجتز امتحان «${str(exam.title).slice(0,120)}» بنسبة ${passPercent}% على الأقل لفتح هذا الدرس`);
+    }
+  }
   return { ...enrollment, lesson };
 }
-async function requireCourseVideosComplete(db: StateQueryable, studentId: string, courseId: string, state?: Record<string, any>): Promise<void> {
+async function requireCourseVideosComplete(db: StateQueryable, studentId: string, courseId: string, state?: Record<string, any>, beforeIndex = Number.POSITIVE_INFINITY): Promise<void> {
   const enrollment = await getCourseEnrollment(db, studentId, courseId, state);
   const lessons = Array.isArray(enrollment.course.lessons) ? enrollment.course.lessons : [];
-  for (let index = 0; index < lessons.length; index++) {
+  for (let index = 0; index < Math.min(lessons.length, beforeIndex); index++) {
     const lesson = lessons[index], ref = str(lesson?.videoRef || lesson?.videoUrl).trim();
-    if (!ref) continue;
     if (!lessonReleaseIsOpen(lesson, enrollment.course, enrollment.enrolledAt)) continue;
+    const prerequisiteExamId = lessonPrerequisiteExamId(lesson);
+    if (prerequisiteExamId) {
+      const exam = (Array.isArray(state?.exams) ? state!.exams : []).find((item: any) => String(item?.id) === prerequisiteExamId);
+      const result = await db.query('SELECT percentage,forfeited FROM exam_submissions WHERE student_id=$1 AND exam_id=$2 ORDER BY submitted_at DESC LIMIT 1', [studentId, prerequisiteExamId]);
+      if (!exam || !hasPassedLessonPrerequisite(lesson, studentId, [exam], result.rows.map((row: any) => ({ ...row, student: studentId, exam: prerequisiteExamId })))) fail(403, 'اجتز الامتحان السابق للدرس قبل متابعة محتوى الدورة');
+    }
+    if (!ref) continue;
     const watched = (await db.query('SELECT watched_seconds,duration_seconds,completed_at FROM course_lesson_watch_progress WHERE course_id=$1 AND student_id=$2 AND lesson_index=$3', [courseId, studentId, index])).rows[0];
     if (!watched?.completed_at || !watchedEnough(watched.watched_seconds, watched.duration_seconds)) fail(403, 'شاهد كل فيديو في الدورة حتى نهايته قبل فتح الاختبار أو تسليم الواجب');
   }
@@ -807,7 +834,12 @@ async function initDatabase(): Promise<void> {
   } finally {
     cleanupClient.release();
   }
+  await cleanupExpiredVideoSources();
   await resumeInterruptedVideoJobs();
+  const videoSourceCleanupTimer = setInterval(() => {
+    void cleanupExpiredVideoSources().catch(error => console.error('[video-source-retention]', error instanceof Error ? error.message : 'cleanup failed'));
+  }, 24 * 60 * 60 * 1000);
+  videoSourceCleanupTimer.unref();
   const email = process.env.VIDEO_BOOTSTRAP_ADMIN_EMAIL?.trim();
   const password = process.env.VIDEO_BOOTSTRAP_ADMIN_PASSWORD;
   const existing = await pool.query("SELECT id,role FROM video_users WHERE id='admin' LIMIT 1");
@@ -894,7 +926,7 @@ app.post('/api/v1/auth/password-reset/complete', passwordResetCompleteLimiter, a
     await client.query('UPDATE password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL', [userId]);
     await client.query('COMMIT');
     await audit(userId, 'self_service_password_reset', 'password reset token consumed; prior sessions revoked');
-    clearAuthCookie(res);
+    clearAuthCookie(res, req);
     res.json({ status: 'ok', message: 'تم تغيير كلمة المرور. سجّل الدخول الآن بكلمة المرور الجديدة.' });
   } catch (e) { await client.query('ROLLBACK').catch(() => {}); next(e); }
   finally { client.release(); }
@@ -937,7 +969,7 @@ app.post('/api/v1/auth/login', loginIpLimiter, loginIdentityLimiter, async (req,
     const sessionVersion = Number(user.session_version || 1);
     const token = tokenFor({ sub: user.id, role: user.role, device: hashed, session_version: sessionVersion }, ttl);
     const persistentToken = tokenFor({ sub: user.id, role: user.role, device: hashed, session_version: sessionVersion }, 30 * 24 * 60 * 60);
-    setAuthCookie(res, persistentToken, req.body?.remember !== false);
+    setAuthCookie(res, persistentToken, req.body?.remember !== false, req);
     await audit(String(user.id), 'login', `role=${user.role};device session started`);
     res.json({ token, device_locked: user.role !== 'admin', max_devices: user.role === 'admin' ? null : 1, expires_in: ttl, role: user.role, user_id: user.id });
   } catch (e) { next(e); }
@@ -954,7 +986,7 @@ app.get('/api/v1/auth/session', async (req, res, next) => {
     const ttl = claims.role === 'admin' ? 2 * 60 * 60 : 8 * 60 * 60;
     const accessToken = tokenFor({ sub: claims.sub, role: claims.role, device: claims.device, session_version: claims.session_version ?? 1 }, ttl);
     res.json({ token: accessToken, role: claims.role, user_id: claims.sub, expires_in: ttl });
-  } catch (e) { clearAuthCookie(res); next(e); }
+  } catch (e) { clearAuthCookie(res, req); next(e); }
 });
 
 app.post('/api/v1/auth/logout', async (req, res, next) => {
@@ -962,9 +994,9 @@ app.post('/api/v1/auth/logout', async (req, res, next) => {
     const claims = bearer(req); await requireDeviceSession(claims);
     if (requiresDeviceRegistration(claims.role)) await pool.query('UPDATE account_devices SET active=FALSE,last_seen_at=now() WHERE user_id=$1 AND device_hash=$2',[claims.sub,claims.device]);
     await audit(claims.sub,'logout','device session ended');
-    clearAuthCookie(res);
+    clearAuthCookie(res, req);
     res.json({status:'OK'});
-  } catch (e) { clearAuthCookie(res); next(e); }
+  } catch (e) { clearAuthCookie(res, req); next(e); }
 });
 
 app.get('/api/v1/account/activity', async (req, res, next) => {
@@ -1382,9 +1414,18 @@ async function loadAssignedExam(client: PoolClient, studentId: string, examId: s
   if (courseId) {
     const course = (Array.isArray(state.courses) ? state.courses : []).find((item: any) => String(item?.id) === courseId);
     if (!course || course.active === false) fail(403, 'الدورة المرتبطة بالاختبار غير متاحة');
-    // This also repairs an outdated SQL enrollment index after verifying the
-    // student's canonical free-course, approved-payment, or admin-grant access.
-    await requireCourseVideosComplete(client, studentId, courseId, state);
+    const lessonIndex = findLessonPrerequisiteIndex(course, examId);
+    if (lessonIndex >= 0) {
+      // A pre-lesson exam unlocks its target lesson, so requiring that lesson's
+      // video here would make the exam impossible to start. Earlier released
+      // lesson videos and the target lesson's release date still apply.
+      const enrollment = await getCourseEnrollment(client, studentId, courseId, state);
+      if (!lessonReleaseIsOpen(course.lessons[lessonIndex], course, enrollment.enrolledAt)) fail(403, 'لم يحن موعد إتاحة امتحان هذا الدرس بعد');
+      await requireCourseVideosComplete(client, studentId, courseId, state, lessonIndex);
+    } else {
+      // Course-end exams remain gated by all released lesson videos.
+      await requireCourseVideosComplete(client, studentId, courseId, state);
+    }
   }
   const teacherId = str(exam.teacher || exam.teacherId).trim();
   const questions = exam.questions.map((question: unknown) => {
@@ -1432,6 +1473,7 @@ app.post('/api/v1/exams/start', async (req, res, next) => {
       exam_id: examId, title: str(assigned.exam.title), subject: str(assigned.exam.subject),
       started_at: row.started_at, expires_at: expires.toISOString(), remaining_seconds: remainingSeconds,
       duration_minutes: minutes, challenge_limit: assigned.challengeLimit,
+      game_mode: assigned.exam.gameMode === true,
       // Questions are delivered only after eligibility and completion checks; answer keys stay on the server.
       questions: assigned.questions.map(publicExamQuestionForStudent),
       ...(row.retry_pending ? { retry_pending: true, review_answers: row.retry_answers, wrong_question_indexes: row.retry_wrong_indexes } : {})
@@ -1563,7 +1605,7 @@ app.post('/api/v1/admin/accounts/password-reset', async (req, res, next) => {
     const hash = await argon2.hash(password, { type: argon2.argon2id, memoryCost: 19456, timeCost: 2, parallelism: 1 });
     await pool.query('UPDATE video_users SET password=$2,session_version=session_version+1 WHERE id=$1', [id, hash]);
     await audit(claims.sub, 'account_password_reset', `account=${id}; all prior sessions revoked`);
-    if (id === claims.sub) clearAuthCookie(res);
+    if (id === claims.sub) clearAuthCookie(res, req);
     res.json({ status: 'ok', user_id: id, sessions_revoked: true });
   } catch (e) { next(e); }
 });
@@ -2194,18 +2236,21 @@ async function acquireFfmpegSlot(): Promise<() => void> {
 async function processVideoJob(jobId: string, videoId: string, input: string): Promise<void> {
   let release: (() => void) | null = null;
   let error: string | null = null;
+  const hlsRoot = path.join(MEDIA_ROOT, 'hls');
+  const outDir = path.join(hlsRoot, videoId);
+  const stagingDir = path.join(hlsRoot, `.${videoId}.${randomUUID()}.tmp`);
   try {
     release = await acquireFfmpegSlot();
     await pool.query("UPDATE video_jobs SET status='processing',updated_at=now() WHERE job_id=$1", [jobId]);
-    const outDir = path.join(MEDIA_ROOT, 'hls', videoId);
-    await mkdir(outDir, { recursive: true });
+    await mkdir(hlsRoot, { recursive: true });
+    await mkdir(stagingDir, { recursive: true });
     const ffmpeg = await resolveFfmpeg(true);
     if (!ffmpeg) throw Object.assign(new Error(FFMPEG_MISSING_MESSAGE), { code: 'FFMPEG_MISSING' });
     const ffprobe = await resolveFfprobe(ffmpeg.command, true);
     if (!ffprobe) throw new Error('تعذر العثور على FFprobe بجوار FFmpeg؛ لا يمكن فحص الفيديو قبل تحويله. ثبّت حزمة FFmpeg الكاملة.');
     const metadata = await inspectVideoInput(ffprobe, input);
     const renditions = selectVideoRenditions(metadata.height);
-    const ffmpegOutDir = outDir.replace(/\\/g, '/');
+    const ffmpegOutDir = stagingDir.replace(/\\/g, '/');
     const args = buildHlsTranscodeArgs(input, ffmpegOutDir, renditions, metadata.hasAudio);
     await new Promise<void>((resolve, reject) => {
       const child = spawn(ffmpeg.command, args, { stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });
@@ -2214,21 +2259,32 @@ async function processVideoJob(jobId: string, videoId: string, input: string): P
       child.on('error', reject);
       child.on('close', code => code === 0 ? resolve() : reject(new Error(stderr || `ffmpeg exited with code ${code}`)));
     });
-    const master = await readFile(path.join(outDir, 'playlist.m3u8'), 'utf8').catch(() => '');
+    const master = await readFile(path.join(stagingDir, 'playlist.m3u8'), 'utf8').catch(() => '');
     const variants = hlsVariantNames(master);
     if (!master.startsWith('#EXTM3U') || !master.includes('#EXT-X-STREAM-INF') || variants.length !== renditions.length) throw new Error('FFmpeg completed without producing a valid multi-quality HLS master playlist');
     for (const variant of variants) {
-      const manifest = await readFile(path.join(outDir, variant), 'utf8').catch(() => '');
+      const manifest = await readFile(path.join(stagingDir, variant), 'utf8').catch(() => '');
       const segments = hlsSegmentNames(manifest);
       if (!manifest.startsWith('#EXTM3U') || !manifest.includes('#EXTINF:') || !segments.length) throw new Error(`FFmpeg produced an invalid HLS rendition playlist: ${variant}`);
       for (const segment of segments) {
-        const output = await stat(path.join(outDir, segment)).catch(() => null);
+        const output = await stat(path.join(stagingDir, segment)).catch(() => null);
         if (!output?.isFile() || output.size < 1) throw new Error(`FFmpeg produced an empty or missing HLS segment: ${segment}`);
       }
     }
+    const backupDir = path.join(hlsRoot, `.${videoId}.${randomUUID()}.previous`);
+    let movedPrevious = false;
+    try { await rename(outDir, backupDir); movedPrevious = true; }
+    catch (moveError) { if ((moveError as NodeJS.ErrnoException).code !== 'ENOENT') throw moveError; }
+    try { await rename(stagingDir, outDir); }
+    catch (publishError) {
+      if (movedPrevious) await rename(backupDir, outDir).catch(() => {});
+      throw publishError;
+    }
+    if (movedPrevious) await rm(backupDir, { recursive: true, force: true }).catch(e => console.error('[video-old-hls-cleanup]', e instanceof Error ? e.message : e));
   } catch (e) {
     const processError = e as NodeJS.ErrnoException;
     error = processError.code === 'ENOENT' || processError.code === 'FFMPEG_MISSING' ? FFMPEG_MISSING_MESSAGE : e instanceof Error ? e.message.slice(-1500) : 'ffmpeg failed';
+    await rm(stagingDir, { recursive: true, force: true }).catch(() => {});
   } finally {
     release?.();
   }
@@ -2236,7 +2292,8 @@ async function processVideoJob(jobId: string, videoId: string, input: string): P
   const playlistValue = error ? null : `/api/v1/videos/${videoId}/playlist`;
   try {
     await pool.query('UPDATE video_jobs SET status=$2,error=$3,playlist=$4,updated_at=now() WHERE job_id=$1', [jobId, status, error, playlistValue]);
-    if (!error) await rm(input, { force: true }).catch(e => console.error('[video-input-cleanup]', e instanceof Error ? e.message : e));
+    // Retain the source for bounded startup recovery if a persistent media disk
+    // is restored with a missing or incomplete HLS package.
   } catch (e) {
     // Keep the uploaded source if the job result could not be persisted. Startup
     // recovery can safely run the transcode again and update the same job.
@@ -2244,18 +2301,19 @@ async function processVideoJob(jobId: string, videoId: string, input: string): P
   }
 }
 async function resumeInterruptedVideoJobs(): Promise<void> {
-  const { rows } = await pool.query("SELECT job_id,video_id,input_path FROM video_jobs WHERE status IN ('queued','processing') ORDER BY created_at ASC");
+  const { rows } = await pool.query("SELECT job_id,video_id,input_path,status FROM video_jobs WHERE status IN ('queued','processing') OR (status='completed' AND updated_at>now()-($1::int*interval '1 day')) ORDER BY created_at ASC", [VIDEO_SOURCE_RETENTION_DAYS]);
   if (!rows.length) return;
   const mediaRoot = await realpath(MEDIA_ROOT);
   for (const row of rows) {
     const jobId = String(row.job_id || ''), videoId = String(row.video_id || '');
     try {
+      if (row.status === 'completed' && (await stat(path.join(MEDIA_ROOT, 'hls', videoId, 'playlist.m3u8')).catch(() => null))?.isFile()) continue;
       const input = await realpath(String(row.input_path || ''));
       const relative = path.relative(mediaRoot, input);
       if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) throw new Error('input path is outside media storage');
       const file = await stat(input);
       if (!file.isFile()) throw new Error('uploaded video source is not a file');
-      await pool.query("UPDATE video_jobs SET status='queued',error=NULL,updated_at=now() WHERE job_id=$1", [jobId]);
+      await pool.query("UPDATE video_jobs SET status='queued',error=NULL,playlist=NULL,updated_at=now() WHERE job_id=$1", [jobId]);
       setTimeout(() => {
         void processVideoJob(jobId, videoId, input).catch(async error => {
           console.error('[video-job-resume]', error instanceof Error ? error.message : error);
@@ -2268,6 +2326,20 @@ async function resumeInterruptedVideoJobs(): Promise<void> {
       await pool.query("UPDATE video_jobs SET status='failed',error=$2,updated_at=now() WHERE job_id=$1", [jobId, `تعذر استئناف الفيديو: ${message}`]);
       console.error(`[video-job] cannot resume ${jobId}: ${message}`);
     }
+  }
+}
+async function cleanupExpiredVideoSources(): Promise<void> {
+  const { rows } = await pool.query("SELECT job_id,input_path FROM video_jobs WHERE status='completed' AND input_path IS NOT NULL AND updated_at<now()-($1::int*interval '1 day')", [VIDEO_SOURCE_RETENTION_DAYS]);
+  if (!rows.length) return;
+  const mediaRoot = await realpath(MEDIA_ROOT);
+  for (const row of rows) {
+    const source = String(row.input_path || '');
+    try {
+      const resolved = await realpath(source);
+      const relative = path.relative(mediaRoot, resolved);
+      if (relative && relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) await rm(resolved, { force: true });
+    } catch { /* already removed or unavailable */ }
+    await pool.query('UPDATE video_jobs SET input_path=NULL WHERE job_id=$1 AND status=\'completed\'', [row.job_id]);
   }
 }
 app.post('/api/v1/video/upload', async (req: AuthedRequest, res, next) => {

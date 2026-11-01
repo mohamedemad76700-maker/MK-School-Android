@@ -126,6 +126,7 @@
   const originalStudentExamsPage = pages.exams;
   pages.exams = function () {
     if (!isStudent()) return originalStudentExamsPage?.() || '<div class="card empty">الاختبارات غير متاحة.</div>';
+    if (window.__mkActiveExam && window.__mkCurrentExamData) return window.__mkRenderExamPage?.() || '<div class="card empty">جارٍ فتح الامتحان.</div>';
     const exams = (db.exams || []).filter(item => String(item.grade) === String(me()?.grade || ''));
     return `<div class="grid"><div class="card"><div class="section-head"><div><h3>اختباراتي</h3><span class="small muted">وقت كل اختبار يبدأ من أول دخول ويستمر على الخادم.</span></div></div><div class="list">${exams.map(exam => {
       const result = (db.examResults || []).find(item => String(item.exam ?? item.examId) === String(exam.id) && String(item.student ?? item.studentId) === String(current.id));
