@@ -658,7 +658,7 @@
       if(isAdmin()&&!await window.mkBackendSyncUsers())return false;
       let attempts=0;
       while(attempts++<3){
-        const localAll=mkStateSafeClone(db);const base=__mkServerSnapshot||{};const allowed=isAdmin()?new Set([...Object.keys(base),...Object.keys(localAll)]):new Set(window.__mkServerAllowedKeys||Object.keys(base));const local={};for(const key of allowed)if(mkHasOwn(localAll,key))local[key]=localAll[key];
+        const localAll=mkStateSafeClone(db);const base=__mkServerSnapshot||{};const ephemeralCommunityKeys=new Set(['communitySpaces','communityReplies','communityControls','communityBanned','communityBannedMembers']);const allowed=isAdmin()?new Set([...Object.keys(base),...Object.keys(localAll).filter(key=>!ephemeralCommunityKeys.has(key))]):new Set(window.__mkServerAllowedKeys||Object.keys(base));const local={};for(const key of allowed)if(mkHasOwn(localAll,key))local[key]=localAll[key];
         const changes=mkDiffState(base,local,allowed);if(!Object.keys(changes).length)return true;
         let response,data;try{response=await fetch(c.url+'/api/v1/platform/state',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+token},body:JSON.stringify({expected_revision:Number(__mkServerRevision)||0,changes})});data=await response.json().catch(()=>({}));}catch(error){window.__mkBackendLastError=error?.message||'تعذر الاتصال بالخادم لحفظ بيانات المنصة.';console.warn('MK record-level save failed',error);return false;}
         if(response.ok){__mkServerRevision=Number(data.revision)||((Number(__mkServerRevision)||0)+1);__mkServerSnapshot=JSON.parse(JSON.stringify(local));window.__mkServerAllowedKeys=new Set(Object.keys(local));return true;}

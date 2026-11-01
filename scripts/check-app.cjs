@@ -94,7 +94,7 @@ assert.match(teacherRemovalMigration, /DELETE FROM video_users WHERE role = 'tea
 assert.match(backendSource, /app\.get\('\/api\/v1\/videos\/:video_id\/playlist\/:variant'/, 'backend must serve protected HLS quality playlists');
 const frontendApiPaths = new Set([...frontendScripts.matchAll(/[\x27\x22\x60](\/api\/v1\/[^\x27\x22\x60\s]*)[\x27\x22\x60]/g)]
   .map((match) => match[1].split('?')[0].replace(/\/$/, '')));
-const backendApiRoutes = [...backendSource.matchAll(/app\.(?:get|post|delete)\(\s*[\x27\x22\x60](\/api\/v1\/[^\x27\x22\x60]+)[\x27\x22\x60]/g)]
+const backendApiRoutes = [...backendSource.matchAll(/app\.(?:get|post|patch|delete)\(\s*[\x27\x22\x60](\/api\/v1\/[^\x27\x22\x60]+)[\x27\x22\x60]/g)]
   .map((match) => match[1]);
 assert.ok(backendApiRoutes.length > 0, 'backend API routes must be present in the bundled project');
 for (const frontendPath of frontendApiPaths) {

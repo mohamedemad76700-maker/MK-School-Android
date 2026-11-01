@@ -26,6 +26,7 @@ import { advanceWatchProgress, courseLessonsComplete, lessonReleaseIsOpen, lesso
 import { canReadSchoolFile, canUploadSchoolFile, isSafeSchoolStorageKey, safeSchoolOriginalFilename, schoolFileMimeForExtension } from './school-files-utils.js';
 import { validateProductionConfiguration } from './production-config-utils.js';
 import { isSafePasswordResetBase } from './password-reset-utils.js';
+import { canAccessCommunitySpace, canReadCommunityTopic, type CommunitySpace } from './community-utils.js';
 import { buildHlsTranscodeArgs, hlsSegmentNames, hlsVariantNames, rewriteHlsManifest, selectVideoRenditions } from './hls-transcode-utils.js';
 
 const { Pool } = pg;
@@ -365,7 +366,7 @@ function sanitizeState(input: unknown): any {
   }
   return input;
 }
-function filterState(raw: any, claims: Claims, parentIds: string[] | null = null): any {
+function filterState(raw: any, claims: Claims, parentIds: string[] | null = null, communitySpaces: CommunitySpace[] = [], hiddenTopicIds: Set<string> = new Set()): any {
   if (claims.role === 'admin') return sanitizeState(raw);
   const state = raw && typeof raw === 'object' && !Array.isArray(raw) ? structuredClone(raw) : {};
   const id = claims.sub;
@@ -504,11 +505,10 @@ function filterState(raw: any, claims: Claims, parentIds: string[] | null = null
   // Do not expose legacy message records in account state.
   delete state.messages;
   if (Array.isArray(state.complaints)) state.complaints = state.complaints.filter((x: any) => claims.role === 'teacher' ? belongsToTeacherScope(x) : [x?.studentId,x?.student,x?.from,x?.userId].some(v => v != null && (String(v) === id || linkedIds.includes(String(v)))));
-  if (Array.isArray(state.communityTopics)) state.communityTopics = state.communityTopics.filter((x: any) => {
-    const mine = String(x?.authorId ?? x?.userId ?? '') === id;
-    const recipient = String(x?.recipientType ?? x?.targetType ?? 'public');
-    return mine || (x?.status === 'approved' && recipient === 'public');
-  });
+  if (Array.isArray(state.communityTopics)) {
+    const communityState = claims.role === 'parent' ? { ...state, courses: Array.isArray(raw?.courses) ? raw.courses : [] } : state;
+    state.communityTopics = state.communityTopics.filter((topic: any) => canReadCommunityTopic({ topic, role: claims.role as any, userId: id, state: communityState, spaces: communitySpaces, linkedStudentIds: linkedIds, hidden: hiddenTopicIds.has(String(topic?.id ?? '')) }));
+  }
   if (state.platformPoints && typeof state.platformPoints === 'object') for (const key of Object.keys(state.platformPoints)) if (!scopedStudentIds.includes(key)) delete state.platformPoints[key];
   if (Array.isArray(state.mkLibrary)) state.mkLibrary = state.mkLibrary.filter((x: any) => !x?.private && !x?.teacherOnly || (claims.role === 'teacher' && String(x?.teacher ?? x?.teacherId ?? '') === id));
   if (claims.role === 'teacher') {
@@ -608,6 +608,7 @@ function mergeState(baseInput: any, incomingInput: any, claims: Claims): any {
       const recipientType = String(topic?.recipientType ?? topic?.targetType ?? 'public');
       if (recipientType === 'public') return { recipientType: 'public', recipientLabel: 'المجتمع العام', targetCourseId: '', targetInstructor: '' };
       if (recipientType === 'support') return { recipientType: 'support', recipientLabel: 'دعم المنصة', targetCourseId: '', targetInstructor: '' };
+      if (recipientType === 'group') return { recipientType: 'group', recipientLabel: String(topic?.recipientLabel || 'منتدى جماعي').slice(0,120), targetCourseId: '', targetInstructor: '', groupId: String(topic?.groupId ?? topic?.spaceId ?? '') };
       if (recipientType !== 'instructor' || claims.role !== 'student') return null;
       const course = (Array.isArray(base.courses) ? base.courses : []).find((item:any) => String(item?.id ?? '') === String(topic?.targetCourseId ?? '') && item?.active !== false);
       if (!course || !(Array.isArray(course.enrollments) ? course.enrollments : []).map(String).includes(id)) return null;
@@ -1214,6 +1215,118 @@ async function hydrateExamSubmissions(stateInput: any, claims: Claims, parentIds
   return state;
 }
 
+const communityMemberRoles = new Set(['admin','student','parent']);
+async function communityParentStudentIds(claims: Claims): Promise<string[]> {
+  if (claims.role !== 'parent') return [];
+  return (await pool.query('SELECT student_id FROM parent_student_links WHERE parent_id=$1 AND active=TRUE ORDER BY student_id', [claims.sub])).rows.map(row => String(row.student_id));
+}
+async function communityActorName(claims: Claims, state: any): Promise<string> {
+  if (claims.role === 'admin') return 'إدارة المنصة';
+  const profiles = claims.role === 'parent' ? state.parents : state.students;
+  const profile = (Array.isArray(profiles) ? profiles : []).find((item:any) => String(item?.id) === claims.sub);
+  if (profile) return str(profile.name || profile.fullName || profile.displayName || 'عضو').slice(0,120);
+  const stored = await pool.query('SELECT profile_data FROM video_user_profiles WHERE user_id=$1', [claims.sub]);
+  const data = stored.rows[0]?.profile_data || {};
+  return str(data.name || data.fullName || data.displayName || 'عضو').slice(0,120);
+}
+async function communitySpaces(): Promise<CommunitySpace[]> {
+  const result = await pool.query('SELECT space_id,title,description,course_id,teacher_name,visibility,active,created_by,created_at,updated_at FROM community_spaces ORDER BY active DESC,title,created_at');
+  return result.rows.map(row => ({ id:String(row.space_id),title:String(row.title),description:String(row.description||''),courseId:row.course_id?String(row.course_id):'',teacherName:String(row.teacher_name||''),visibility:String(row.visibility)==='private'?'private':'public',active:row.active===true,createdBy:String(row.created_by||''),createdAt:row.created_at,updatedAt:row.updated_at } as any));
+}
+function communityControlsMap(rows: any[]): Record<string,{locked:boolean;hidden:boolean}> {
+  return Object.fromEntries(rows.map(row=>[String(row.topic_id),{locked:row.locked===true,hidden:row.hidden===true}]));
+}
+
+app.get('/api/v1/platform/community', async (req, res, next) => {
+  try {
+    const claims=bearer(req);if(!communityMemberRoles.has(claims.role))fail(403,'community access denied');await requireDeviceSession(claims);
+    const [raw,linkedIds,allSpaces,controlRows,banRows]=await Promise.all([
+      readPlatformState(pool),communityParentStudentIds(claims),communitySpaces(),
+      pool.query('SELECT topic_id,locked,hidden FROM community_topic_controls'),
+      claims.role==='admin'?pool.query('SELECT user_id,reason,created_at FROM community_member_bans WHERE revoked_at IS NULL ORDER BY created_at DESC'):pool.query('SELECT user_id FROM community_member_bans WHERE user_id=$1 AND revoked_at IS NULL',[claims.sub]),
+    ]);
+    const state=await hydrateAccountProfiles(raw),controls=communityControlsMap(controlRows.rows),visibleSpaces=allSpaces.filter(space=>canAccessCommunitySpace({space,role:claims.role as any,userId:claims.sub,state,linkedStudentIds:linkedIds}));
+    const topics=(Array.isArray(state.communityTopics)?state.communityTopics:[]).filter((topic:any)=>canReadCommunityTopic({topic,role:claims.role as any,userId:claims.sub,state,spaces:allSpaces,linkedStudentIds:linkedIds,hidden:controls[String(topic?.id||'')]?.hidden===true}));
+    const topicIds=topics.map((topic:any)=>String(topic.id));
+    const replyResult=topicIds.length?await pool.query(`SELECT reply_id,topic_id,parent_reply_id,author_id,author_role,author_name,body,created_at,edited_at,deleted_at,deleted_by FROM community_replies WHERE topic_id=ANY($1::varchar[])${claims.role==='admin'?'':' AND deleted_at IS NULL'} ORDER BY created_at,reply_id`,[topicIds]):{rows:[] as any[]};
+    const replies:Record<string,any[]>={};for(const row of replyResult.rows){const key=String(row.topic_id);(replies[key]||(replies[key]=[])).push({id:String(row.reply_id),topicId:key,parentId:row.parent_reply_id?String(row.parent_reply_id):'',authorId:String(row.author_id),authorRole:String(row.author_role),authorName:String(row.author_name),body:String(row.body),createdAt:row.created_at,editedAt:row.edited_at||null,deleted:!!row.deleted_at});}
+    const memberBan=claims.role==='admin'?false:banRows.rows.length>0;
+    const visibleTopicIds=new Set(topicIds),visibleControls=Object.fromEntries(Object.entries(controls).filter(([topicId])=>claims.role==='admin'||visibleTopicIds.has(topicId)));
+    res.json({status:'OK',spaces:visibleSpaces,replies,controls:visibleControls,banned:memberBan,bannedMembers:claims.role==='admin'?banRows.rows.map(row=>({userId:String(row.user_id),reason:String(row.reason||''),createdAt:row.created_at})):[]});
+  }catch(error){next(error);}
+});
+
+app.post('/api/v1/platform/community/spaces', async (req,res,next)=>{
+  try {
+    const claims=await admin(req),id=`forum_${randomUUID()}`,title=str(req.body?.title).trim(),description=str(req.body?.description).trim(),courseId=str(req.body?.courseId).trim(),visibility=str(req.body?.visibility);
+    if(title.length<2||title.length>120||description.length>2000||!['public','private'].includes(visibility))fail(400,'invalid community forum details');
+    if(visibility==='private'&&!courseId)fail(400,'private forums must be linked to a course');
+    const state=await readPlatformState(pool),course=courseId?(Array.isArray(state.courses)?state.courses:[]).find((item:any)=>String(item?.id)===courseId&&item?.active!==false):null;
+    if(courseId&&!course)fail(404,'course not found');
+    const teacherName=course?str(course.instructor||course.teacherName||'').trim().slice(0,160):'';
+    const inserted=await pool.query(`INSERT INTO community_spaces(space_id,title,description,course_id,teacher_name,visibility,active,created_by)
+      VALUES($1,$2,$3,$4,$5,$6,TRUE,$7) RETURNING space_id,title,description,course_id,teacher_name,visibility,active,created_by,created_at,updated_at`,[id,title,description,courseId||null,teacherName,visibility,claims.sub]);
+    await audit(claims.sub,'community_space_created',`${title}; visibility=${visibility}; course=${courseId}`);res.status(201).json({status:'OK',space:inserted.rows[0]});
+  }catch(error){next(error);}
+});
+
+app.patch('/api/v1/platform/community/spaces/:spaceId', async (req,res,next)=>{
+  try {
+    const claims=await admin(req),spaceId=str(req.params.spaceId),active=req.body?.active;
+    if(typeof active!=='boolean')fail(400,'space active state is required');
+    const result=await pool.query('UPDATE community_spaces SET active=$2,updated_at=now() WHERE space_id=$1 RETURNING space_id,active',[spaceId,active]);
+    if(!result.rows[0])fail(404,'community forum not found');
+    await audit(claims.sub,active?'community_space_restored':'community_space_archived',spaceId);res.json({status:'OK',space:result.rows[0]});
+  }catch(error){next(error);}
+});
+
+app.post('/api/v1/platform/community/topics/:topicId/replies',async(req,res,next)=>{
+  try {
+    const claims=bearer(req);if(!communityMemberRoles.has(claims.role))fail(403,'community access denied');await requireDeviceSession(claims);
+    const topicId=str(req.params.topicId),body=str(req.body?.body).trim(),parentId=str(req.body?.parentId).trim();
+    if(body.length<2||body.length>4000)fail(400,'reply must contain 2 to 4000 characters');
+    const [raw,linkedIds,spaces,controlResult,banResult]=await Promise.all([readPlatformState(pool),communityParentStudentIds(claims),communitySpaces(),pool.query('SELECT locked,hidden FROM community_topic_controls WHERE topic_id=$1',[topicId]),pool.query('SELECT 1 FROM community_member_bans WHERE user_id=$1 AND revoked_at IS NULL',[claims.sub])]);
+    if(banResult.rows.length)fail(403,'الحساب موقوف مؤقتًا عن المنتدى');
+    const state=await hydrateAccountProfiles(raw),topic=(Array.isArray(state.communityTopics)?state.communityTopics:[]).find((item:any)=>String(item?.id)===topicId);
+    const control=controlResult.rows[0]||{};
+    if(!topic||!canReadCommunityTopic({topic,role:claims.role as any,userId:claims.sub,state,spaces,linkedStudentIds:linkedIds,hidden:control.hidden===true}))fail(404,'الموضوع غير متاح لهذا الحساب');
+    if(control.hidden===true)fail(409,'الموضوع مخفي ولا يقبل الردود');
+    if(control.locked===true)fail(409,'الموضوع مغلق أمام الردود');
+    if(topic.status!=='approved'&&claims.role!=='admin'&&String(topic.authorId)!==claims.sub)fail(403,'الموضوع لم يُنشر بعد');
+    if(parentId){const parent=(await pool.query('SELECT reply_id FROM community_replies WHERE reply_id=$1 AND topic_id=$2 AND deleted_at IS NULL',[parentId,topicId])).rows[0];if(!parent)fail(404,'الرد الأصلي غير موجود');}
+    const name=await communityActorName(claims,state),replyId=`reply_${randomUUID()}`;
+    const result=await pool.query(`INSERT INTO community_replies(reply_id,topic_id,parent_reply_id,author_id,author_role,author_name,body)
+      VALUES($1,$2,$3,$4,$5,$6,$7) RETURNING reply_id,topic_id,parent_reply_id,author_id,author_role,author_name,body,created_at`,[replyId,topicId,parentId||null,claims.sub,claims.role,name,body]);
+    await audit(claims.sub,'community_reply_created',`topic=${topicId}; reply=${replyId}`);res.status(201).json({status:'OK',reply:{id:replyId,topicId,parentId,parent_id:parentId||null,authorId:claims.sub,authorRole:claims.role,authorName:name,body,createdAt:result.rows[0].created_at}});
+  }catch(error){next(error);}
+});
+
+app.post('/api/v1/platform/community/moderation',async(req,res,next)=>{
+  try {
+    const claims=await admin(req),action=str(req.body?.action),topicId=str(req.body?.topicId),targetId=str(req.body?.targetId),reason=str(req.body?.reason).trim().slice(0,500);
+    if(action==='ban'||action==='unban'){
+      if(!targetId||targetId===claims.sub)fail(400,'invalid forum member');
+      const target=(await pool.query("SELECT role FROM video_users WHERE id=$1 AND role IN ('student','parent') AND active=TRUE",[targetId])).rows[0];if(!target)fail(404,'student or parent account not found');
+      if(action==='ban')await pool.query(`INSERT INTO community_member_bans(user_id,banned_by,reason,revoked_by,revoked_at) VALUES($1,$2,$3,NULL,NULL) ON CONFLICT(user_id) DO UPDATE SET banned_by=EXCLUDED.banned_by,reason=EXCLUDED.reason,created_at=now(),revoked_by=NULL,revoked_at=NULL`,[targetId,claims.sub,reason]);
+      else await pool.query('UPDATE community_member_bans SET revoked_by=$2,revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL',[targetId,claims.sub]);
+      await audit(claims.sub,action==='ban'?'community_member_banned':'community_member_unbanned',targetId);res.json({status:'OK'});return;
+    }
+    if(action==='delete_reply'||action==='restore_reply'){
+      if(!targetId)fail(400,'reply id required');
+      const changed=action==='delete_reply'?await pool.query('UPDATE community_replies SET deleted_at=now(),deleted_by=$2 WHERE reply_id=$1 AND deleted_at IS NULL RETURNING reply_id',[targetId,claims.sub]):await pool.query('UPDATE community_replies SET deleted_at=NULL,deleted_by=NULL WHERE reply_id=$1 AND deleted_at IS NOT NULL RETURNING reply_id',[targetId]);
+      if(!changed.rows[0])fail(404,'reply not found');await audit(claims.sub,`community_${action}`,targetId);res.json({status:'OK'});return;
+    }
+    if(!topicId||!['lock','unlock','hide','restore'].includes(action))fail(400,'invalid community moderation action');
+    const state=await readPlatformState(pool),topic=(Array.isArray(state.communityTopics)?state.communityTopics:[]).find((item:any)=>String(item?.id)===topicId);if(!topic)fail(404,'topic not found');
+    const locked=action==='lock'?true:action==='unlock'?false:undefined,hidden=action==='hide'?true:action==='restore'?false:undefined;
+    const before=(await pool.query('SELECT locked,hidden FROM community_topic_controls WHERE topic_id=$1',[topicId])).rows[0]||{};
+    const nextLocked=locked===undefined?before.locked===true:locked,nextHidden=hidden===undefined?before.hidden===true:hidden;
+    await pool.query(`INSERT INTO community_topic_controls(topic_id,locked,hidden,updated_by) VALUES($1,$2,$3,$4)
+      ON CONFLICT(topic_id) DO UPDATE SET locked=EXCLUDED.locked,hidden=EXCLUDED.hidden,updated_by=EXCLUDED.updated_by,updated_at=now()`,[topicId,nextLocked,nextHidden,claims.sub]);
+    await audit(claims.sub,`community_topic_${action}`,topicId);res.json({status:'OK',controls:{locked:nextLocked,hidden:nextHidden}});
+  }catch(error){next(error);}
+});
+
 app.get('/api/v1/platform/state', async (req, res, next) => {
   try {
     const claims = bearer(req); await requireDeviceSession(claims);
@@ -1241,7 +1354,9 @@ app.get('/api/v1/platform/state', async (req, res, next) => {
     const hasAccounts = ['students','parents'].some(key => Array.isArray(withSubmissions[key]) && withSubmissions[key].length > 0);
     const revision = Number(meta.rows[0]?.revision ?? 0);
     if (Object.keys(raw).length === 0 && !hasAccounts && !withSubmissions.examResults.length) { res.json({ status: 'EMPTY', state: {}, revision, updated_at: meta.rows[0]?.updated_at || null }); return; }
-    res.json({ status: 'OK', state: filterState(withSubmissions, claims, parentIds), revision, updated_at: meta.rows[0]?.updated_at || null });
+    const [allSpaces,topicControls]=await Promise.all([communitySpaces(),pool.query('SELECT topic_id,hidden FROM community_topic_controls WHERE hidden=TRUE')]);
+    const hiddenTopicIds=new Set(topicControls.rows.map(row=>String(row.topic_id)));
+    res.json({ status: 'OK', state: filterState(withSubmissions, claims, parentIds, allSpaces, hiddenTopicIds), revision, updated_at: meta.rows[0]?.updated_at || null });
   } catch (e) { next(e); }
 });
 app.post('/api/v1/platform/state', async (req, res, next) => {
@@ -1268,6 +1383,22 @@ app.post('/api/v1/platform/state', async (req, res, next) => {
     let candidate: Record<string, any> = {};
     try { candidate = changes != null ? applyPlatformStateChanges(current, changes) : sanitizeState(legacyState); }
     catch (error) { fail(400, error instanceof Error ? error.message : 'invalid state changes'); }
+    const oldCommunityTopics=new Map((Array.isArray(current.communityTopics)?current.communityTopics:[]).map((topic:any)=>[String(topic?.id||''),topic]));
+    const changedCommunityTopics=(Array.isArray(candidate.communityTopics)?candidate.communityTopics:[]).filter((topic:any)=>topic&&String(topic.authorId||'')===claims.sub&&JSON.stringify(oldCommunityTopics.get(String(topic.id||''))||null)!==JSON.stringify(topic));
+    if(changedCommunityTopics.length&&claims.role!=='admin'){
+      const ban=(await client.query('SELECT 1 FROM community_member_bans WHERE user_id=$1 AND revoked_at IS NULL',[claims.sub])).rows[0];
+      if(ban)fail(403,'الحساب موقوف مؤقتًا عن المنتدى');
+    }
+    for(const topic of changedCommunityTopics){
+      const recipient=str(topic.recipientType||topic.targetType||'public');
+      if(recipient!=='group')continue;
+      const groupId=str(topic.groupId||topic.spaceId),row=(await client.query('SELECT space_id,title,description,course_id,teacher_name,visibility,active FROM community_spaces WHERE space_id=$1',[groupId])).rows[0];
+      if(!row||row.active!==true)fail(404,'المنتدى الجماعي غير متاح');
+      const space: CommunitySpace={id:String(row.space_id),title:String(row.title),description:String(row.description||''),courseId:row.course_id?String(row.course_id):'',teacherName:String(row.teacher_name||''),visibility:String(row.visibility)==='private'?'private':'public',active:row.active===true};
+      const linked=claims.role==='parent'?(await client.query('SELECT student_id FROM parent_student_links WHERE parent_id=$1 AND active=TRUE',[claims.sub])).rows.map(r=>String(r.student_id)):[];
+      if(!canAccessCommunitySpace({space,role:claims.role as any,userId:claims.sub,state:current,linkedStudentIds:linked}))fail(403,'لا تملك صلاحية النشر في هذا المنتدى');
+      topic.recipientLabel=space.title;topic.groupId=space.id;
+    }
     if (claims.role === 'student' && Array.isArray(candidate.payments)) {
       const currentPayments = Array.isArray(current.payments) ? current.payments : [];
       const knownIds = new Set(currentPayments.map((p:any) => String(p?.id ?? '')));
@@ -1992,10 +2123,10 @@ async function canReadExamQuestionFile(claims: Claims, file: any): Promise<boole
 async function canReadAuthorizedSchoolFile(claims: Claims, file: any): Promise<boolean> {
   if (file.purpose === 'community-attachment') {
     if (claims.role === 'admin') return true;
-    const state = await readPlatformState(pool);
+    const [state,linkedIds,spaces,controlRows]=await Promise.all([readPlatformState(pool),communityParentStudentIds(claims),communitySpaces(),pool.query('SELECT topic_id,hidden FROM community_topic_controls WHERE hidden=TRUE')]);
+    const hidden=new Set(controlRows.rows.map(row=>String(row.topic_id)));
     return (Array.isArray(state.communityTopics) ? state.communityTopics : []).some((topic:any) =>
-      Array.isArray(topic?.attachment?.fileId ? [topic.attachment.fileId] : topic?.attachments) &&
-      (topic.status === 'approved' || String(topic.authorId ?? '') === claims.sub) &&
+      canReadCommunityTopic({topic,role:claims.role as any,userId:claims.sub,state,spaces,linkedStudentIds:linkedIds,hidden:hidden.has(String(topic?.id||''))}) &&
       (String(topic?.attachment?.fileId || '') === String(file.file_id) || (Array.isArray(topic?.attachments) && topic.attachments.some((ref:any) => String(ref?.fileId ?? ref) === String(file.file_id)))));
   }
   if (file.purpose !== 'platform-library') return canReadExamQuestionFile(claims, file);

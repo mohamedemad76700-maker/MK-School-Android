@@ -74,6 +74,11 @@ function normalizeDB(d){
  d.questionBank=d.questionBank||[]; d.courses=Array.isArray(d.courses)?d.courses:[]; d.courseRequests=Array.isArray(d.courseRequests)?d.courseRequests:[]; d.courseProgress=d.courseProgress&&typeof d.courseProgress==='object'?d.courseProgress:{}; d.courses.forEach(c=>{c.lessons=Array.isArray(c.lessons)?c.lessons:[];c.enrollments=Array.isArray(c.enrollments)?c.enrollments:[];c.pending=Array.isArray(c.pending)?c.pending:[]});d.mkLibrary=Array.isArray(d.mkLibrary)?d.mkLibrary:[];d.mkLibrary.forEach(item=>{item.teacher='admin';item.teacherId='admin';item.teacherName='إدارة المنصة'});
  d.complaints=d.complaints||[];
   d.communityTopics=Array.isArray(d.communityTopics)?d.communityTopics:[];
+  d.communitySpaces=Array.isArray(d.communitySpaces)?d.communitySpaces:[];
+  d.communityReplies=d.communityReplies&&typeof d.communityReplies==='object'?d.communityReplies:{};
+  d.communityControls=d.communityControls&&typeof d.communityControls==='object'?d.communityControls:{};
+  d.communityBannedMembers=Array.isArray(d.communityBannedMembers)?d.communityBannedMembers:[];
+  d.communityBanned=d.communityBanned===true;
  d.certificates=d.certificates||[];
  d.projects=d.projects||[];
  d.resources=d.resources||[];
