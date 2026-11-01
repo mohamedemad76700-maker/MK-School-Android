@@ -3,6 +3,7 @@
   "__examFinish",
   "__examBackToList",
   "mkPlayYoutube",
+  "mkToggleLessonSource",
   "__examGo",
   "__examMark",
   "__examNext",
